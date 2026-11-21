@@ -878,7 +878,7 @@ enum DescriptorBuilder {
                     </animations>
                   </CALayer>
                 </sublayers>
-\(zoomXML)              </CATransformLayer>
+              \(zoomXML)              </CATransformLayer>
             </sublayers>
             <states><LKState name="Locked"><elements/></LKState><LKState name="Unlock"><elements/></LKState><LKState name="Sleep"><elements/></LKState></states>
             <stateTransitions><LKStateTransition fromState="*" toState="Unlock"><elements/></LKStateTransition><LKStateTransition fromState="Unlock" toState="*"><elements/></LKStateTransition><LKStateTransition fromState="*" toState="Locked"><elements/></LKStateTransition><LKStateTransition fromState="Locked" toState="*"><elements/></LKStateTransition><LKStateTransition fromState="*" toState="Sleep"><elements/></LKStateTransition><LKStateTransition fromState="Sleep" toState="*"><elements/></LKStateTransition></stateTransitions>
@@ -956,7 +956,7 @@ enum DescriptorBuilder {
                     <contents type="CGImage" src="\(unlockSrc)"/>
                   </CALayer>
                 </sublayers>
-\(zoomXML)              </CATransformLayer>
+              \(zoomXML)              </CATransformLayer>
             </sublayers>
             <states>
               <LKState name="Locked">
