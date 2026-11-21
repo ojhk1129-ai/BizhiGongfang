@@ -455,7 +455,7 @@ enum TendiesImporter {
     /// （从已输出的窗口里复制，支持重叠复制）。
     private static func inflateBlock(reader: inout BitReader, output: inout [UInt8], litTable: HuffmanTable, distTable: HuffmanTable) throws {
         while true {
-            let sym = try decodeSymbol(reader: reader, table: litTable)
+            let sym = try decodeSymbol(reader: &reader, table: litTable)
             if sym == 256 { return }
             if sym < 256 {
                 output.append(UInt8(sym))
@@ -463,7 +463,7 @@ enum TendiesImporter {
                 let li = sym - 257
                 guard li < lengthBase.count else { throw InflateError.badCode }
                 let length = lengthBase[li] + (try reader.bits(lengthExtra[li]))
-                let dsym = try decodeSymbol(reader: reader, table: distTable)
+                let dsym = try decodeSymbol(reader: &reader, table: distTable)
                 guard dsym < distanceBase.count else { throw InflateError.badCode }
                 let distance = distanceBase[dsym] + (try reader.bits(distanceExtra[dsym]))
                 guard distance <= output.count else { throw InflateError.badDistance }
