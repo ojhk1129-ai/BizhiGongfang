@@ -9,6 +9,7 @@ struct VideoEditorView: View {
     @State private var videoURL: URL?
     @State private var videoDuration: Double?
     @State private var player: AVPlayer?
+    @State private var effects = WallpaperEffects()
     @State private var showPicker = false
     @State private var isInjecting = false
     @State private var isExportingTendies = false
@@ -25,6 +26,7 @@ struct VideoEditorView: View {
                 previewSection
                 infoSection
                 pickSection
+                effectsSection
                 exportSection
             }
             .padding()
@@ -37,7 +39,7 @@ struct VideoEditorView: View {
                 loadPickedVideoURL(from: result) { url in
                     guard let url = url else { return }
                     videoURL = url
-                    player = AVPlayer(url: url)
+                    rebuildPlayer()
                     loadDuration(for: url)
                 }
             }
@@ -55,6 +57,55 @@ struct VideoEditorView: View {
         .respringPrompt(isPresented: $showRespringPrompt, respringing: $respringing)
         .onDisappear {
             player?.pause()
+        }
+        .onChange(of: effects.filter) { _, _ in rebuildPlayer() }
+    }
+
+    /// 滤镜预览（构建 #27）：用 AVVideoComposition 给每帧套 CIFilter，
+    /// 换掉 player 的当前 item；.none 时去掉 composition（原画直出）。
+    /// 换 item 后重新播放，预览保持播放状态。
+    private func rebuildPlayer() {
+        guard let videoURL = videoURL else { return }
+        let asset = AVURLAsset(url: videoURL)
+        let item = AVPlayerItem(asset: asset)
+        if effects.filter != .none {
+            let filter = effects.filter
+            item.videoComposition = AVVideoComposition(asset: asset) { request in
+                let filtered = WallpaperEffects.filteredCIImage(request.sourceImage, filter: filter)
+                request.finish(with: filtered, context: nil)
+            }
+        }
+        if let player = player {
+            player.replaceCurrentItem(with: item)
+        } else {
+            player = AVPlayer(playerItem: item)
+        }
+        player?.play()
+    }
+
+    /// 特效（构建 #27）：粒子 / 环境浮动 / 缓慢缩放 / 滤镜。
+    /// 滤镜实时显示在预览里；粒子、浮动、缩放是 CAML 动画，只在锁屏上出现。
+    private var effectsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("特效")
+                .font(.headline)
+            Picker("粒子", selection: $effects.particle) {
+                ForEach(ParticleStyle.allCases, id: \.self) { style in
+                    Text(style.displayName).tag(style)
+                }
+            }
+            .pickerStyle(.segmented)
+            Toggle("环境浮动", isOn: $effects.ambient)
+            Toggle("缓慢缩放", isOn: $effects.slowZoom)
+            Picker("滤镜", selection: $effects.filter) {
+                ForEach(WallpaperFilter.allCases, id: \.self) { filter in
+                    Text(filter.displayName).tag(filter)
+                }
+            }
+            .pickerStyle(.menu)
+            Text("粒子、浮动、缩放只在锁屏上出现，预览里看不到；滤镜实时显示在预览里。")
+                .font(.footnote)
+                .foregroundColor(.secondary)
         }
     }
 
@@ -163,7 +214,8 @@ struct VideoEditorView: View {
                     do {
                         let url = try await TendiesExporter.exportVideo(
                             videoURL: cropped.videoURL,
-                            name: WallpaperStore.defaultName(for: .video)
+                            name: WallpaperStore.defaultName(for: .video),
+                            effects: effects
                         )
                         await MainActor.run {
                             self.isExportingTendies = false
@@ -198,7 +250,9 @@ struct VideoEditorView: View {
             case .success(let cropped):
                 Task {
                     do {
-                        let still = try await VideoCropper.stillImage(from: cropped.videoURL, at: cropped.stillImageTime)
+                        // 构建 #27：记录用的静态图也套滤镜，和描述符里的滤镜帧一致。
+                        let rawStill = try await VideoCropper.stillImage(from: cropped.videoURL, at: cropped.stillImageTime)
+                        let still = WallpaperEffects.apply(effects.filter, to: rawStill)
                         guard let jpegData = LivePhotoMetadata.jpegData(for: still, identifier: identifier) else {
                             await MainActor.run {
                                 self.isInjecting = false
@@ -213,7 +267,8 @@ struct VideoEditorView: View {
                             kind: .video,
                             still: still,
                             stillJPEGData: jpegData,
-                            store: self.store
+                            store: self.store,
+                            effects: effects
                         )
                         await MainActor.run {
                             self.isInjecting = false
