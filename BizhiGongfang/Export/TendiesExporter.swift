@@ -18,9 +18,10 @@ import UIKit
 /// ZIP 用纯 Swift 手写（stored，不压缩，不引第三方库）：JPEG 本身已压缩，
 /// 存了也不大；格式按 ZIP 规范（local file header + central directory +
 /// end of central directory，CRC32 算对，目录项以 / 结尾，文件名 UTF-8），
-/// ZIPFoundation / FileManager.unzipItem / Camlo 都能解。写完用
-/// FileManager.unzipItem 自检一次，解不开或缺 Wallpaper.plist 就抛错，
-/// 不返回坏文件。
+/// ZIPFoundation / Camlo 都能解。写完自检一次：直接读中央目录，
+/// 确认里面有 Wallpaper.plist，缺了就抛错，不返回坏文件。
+/// （不用 FileManager.unzipItem 自检——它在工作流用的 Xcode 16.4 SDK 里
+/// 不存在，构建 #24 第一次编就因为它失败。）
 enum TendiesExporter {
 
     enum ExportError: LocalizedError {
@@ -268,25 +269,62 @@ enum TendiesExporter {
         return zip
     }
 
-    /// 自检：用系统 API 把刚生成的 .tendies 解到临时目录，
-    /// 确认能解出 descriptors/<UUID>/ 且里面有 Wallpaper.plist，
-    /// 否则抛错，不返回坏文件。
+    /// 自检：不依赖系统解压 API（FileManager.unzipItem 在工作流用的
+    /// Xcode 16.4 SDK 里不存在），直接读刚生成的 ZIP 的中央目录，
+    /// 确认里面有 descriptors/<UUID>/…/Wallpaper.plist，否则抛错，
+    /// 不返回坏文件。
     private static func verify(tendiesURL: URL, uuid: String) throws {
-        let fileManager = FileManager.default
-        let checkDir = fileManager.temporaryDirectory
-            .appendingPathComponent("BizhiGongfang-Tendies-Check-\(UUID().uuidString)", isDirectory: true)
-        defer { try? fileManager.removeItem(at: checkDir) }
-        do {
-            try fileManager.createDirectory(at: checkDir, withIntermediateDirectories: true)
-            try fileManager.unzipItem(at: tendiesURL, to: checkDir)
-        } catch {
+        guard let data = try? Data(contentsOf: tendiesURL), !data.isEmpty else {
             throw ExportError.verificationFailed
         }
-        let plistURL = checkDir
-            .appendingPathComponent("descriptors/\(uuid)/versions/1/contents/\(DescriptorBuilder.wallpaperFileName)/Wallpaper.plist")
-        guard fileManager.fileExists(atPath: plistURL.path) else {
-            throw ExportError.verificationFailed
+        // 找 EOCD（end of central directory，签名 0x06054b50）：从文件尾
+        // 往前最多搜 64KB（含注释区）。EOCD 固定 22 字节。
+        let eocdSignature: [UInt8] = [0x50, 0x4b, 0x05, 0x06]
+        let searchStart = data.count > 65557 ? data.count - 65557 : 0
+        var eocdOffset: Int?
+        var i = data.count - 22
+        while i >= searchStart {
+            if data[i] == eocdSignature[0], data[i + 1] == eocdSignature[1],
+               data[i + 2] == eocdSignature[2], data[i + 3] == eocdSignature[3] {
+                eocdOffset = i
+                break
+            }
+            i -= 1
         }
+        guard let eocd = eocdOffset else { throw ExportError.verificationFailed }
+        // EOCD 里读中央目录的条目数（偏移 10，UInt16）和起始偏移（偏移 16，
+        // UInt32；注意偏移 12 是中央目录的字节数，不是起始偏移）。
+        let entryCount = Int(data[eocd + 10]) | (Int(data[eocd + 11]) << 8)
+        guard entryCount > 0 else { throw ExportError.verificationFailed }
+        let centralOffset = Int(data[eocd + 16])
+            | (Int(data[eocd + 17]) << 8)
+            | (Int(data[eocd + 18]) << 16)
+            | (Int(data[eocd + 19]) << 24)
+        // 逐条读中央目录（每条以签名 0x02014b50 开头），找 Wallpaper.plist。
+        let wanted = "descriptors/\(uuid)/versions/1/contents/\(DescriptorBuilder.wallpaperFileName)/Wallpaper.plist"
+        var offset = centralOffset
+        var found = false
+        for _ in 0..<entryCount {
+            guard offset + 46 <= data.count,
+                  data[offset] == 0x50, data[offset + 1] == 0x4b,
+                  data[offset + 2] == 0x01, data[offset + 3] == 0x02 else {
+                throw ExportError.verificationFailed
+            }
+            let nameLength = Int(data[offset + 28]) | (Int(data[offset + 29]) << 8)
+            let extraLength = Int(data[offset + 30]) | (Int(data[offset + 31]) << 8)
+            let commentLength = Int(data[offset + 32]) | (Int(data[offset + 33]) << 8)
+            let nameStart = offset + 46
+            guard nameStart + nameLength <= data.count else {
+                throw ExportError.verificationFailed
+            }
+            let nameData = data[nameStart..<(nameStart + nameLength)]
+            if String(decoding: nameData, as: UTF8.self) == wanted {
+                found = true
+                break
+            }
+            offset = nameStart + nameLength + extraLength + commentLength
+        }
+        guard found else { throw ExportError.verificationFailed }
     }
 
     // MARK: - CRC32 / DOS 时间
@@ -316,8 +354,15 @@ enum TendiesExporter {
         calendar.timeZone = TimeZone.current
         let c = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
         let year = max(1980, min(2107, c.year ?? 1980))
-        let time = UInt16(((c.hour ?? 0) << 11) | ((c.minute ?? 0) << 5) | ((c.second ?? 0) / 2))
-        let dosDate = UInt16(((year - 1980) << 9) | ((c.month ?? 1) << 5) | (c.day ?? 1))
+        // 分开算再拼：一次写完编译器类型检查超时（构建 #24 失败原因之一）。
+        let hourPart = (c.hour ?? 0) << 11
+        let minutePart = (c.minute ?? 0) << 5
+        let secondPart = (c.second ?? 0) / 2
+        let time = UInt16(hourPart | minutePart | secondPart)
+        let yearPart = (year - 1980) << 9
+        let monthPart = (c.month ?? 1) << 5
+        let dayPart = c.day ?? 1
+        let dosDate = UInt16(yearPart | monthPart | dayPart)
         return (time, dosDate)
     }
 }
@@ -326,12 +371,12 @@ private extension Data {
     /// 小端写一个 UInt16。
     mutating func appendUInt16(_ value: UInt16) {
         var v = value.littleEndian
-        append(contentsOf: withUnsafeBytes(of: &v) { Array($0) })
+        append(contentsOf: Swift.withUnsafeBytes(of: &v) { Array($0) })
     }
 
     /// 小端写一个 UInt32。
     mutating func appendUInt32(_ value: UInt32) {
         var v = value.littleEndian
-        append(contentsOf: withUnsafeBytes(of: &v) { Array($0) })
+        append(contentsOf: Swift.withUnsafeBytes(of: &v) { Array($0) })
     }
 }
