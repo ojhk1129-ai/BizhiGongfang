@@ -639,6 +639,69 @@ enum PosterBoardStore {
         }
     }
 
+    /// 读一张已装描述符的缩略图（只读）：Background .ca 包 assets 里
+    /// 的 0.jpg，没有就读第一张 .jpg。读不到返回 nil。
+    /// 和 allDescriptorSummaries 一样自己拿 consume 句柄。
+    static func thumbnailJPEG(for posterUUID: String, provider: String) -> Data? {
+        guard UUID(uuidString: posterUUID) != nil,
+              let appHash = try? findPosterBoardHash(),
+              let destination = try? descriptorDestination(appHash: appHash, provider: provider),
+              let handle = try? consume(path: destination, create: false) else { return nil }
+        defer { handle.release() }
+        let fileManager = FileManager.default
+        let folderPath = destination + "/" + posterUUID
+
+        // 版本目录（按数字从大到小）
+        let versionsURL = URL(fileURLWithPath: folderPath, isDirectory: true)
+            .appendingPathComponent("versions", isDirectory: true)
+        var versionDirs: [URL] = []
+        if let entries = try? fileManager.contentsOfDirectory(
+            at: versionsURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: []
+        ) {
+            versionDirs = entries.filter {
+                (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            }
+        }
+        versionDirs.sort { (Int($0.lastPathComponent) ?? -1) > (Int($1.lastPathComponent) ?? -1) }
+
+        // .wallpaper 文件夹 → Background .ca 包 → assets 里读 0.jpg
+        for dir in versionDirs {
+            let contentsURL = dir.appendingPathComponent("contents", isDirectory: true)
+            let entries = (try? fileManager.contentsOfDirectory(
+                at: contentsURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: []
+            )) ?? []
+            guard let wallpaperURL = entries.first(where: {
+                $0.lastPathComponent.hasSuffix(".wallpaper")
+                    && (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            }) else { continue }
+            let packageEntries = (try? fileManager.contentsOfDirectory(
+                at: wallpaperURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: []
+            )) ?? []
+            guard let backgroundPackage = packageEntries.first(where: {
+                $0.lastPathComponent.hasSuffix(".ca")
+                    && $0.lastPathComponent.localizedCaseInsensitiveContains("Background")
+                    && (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            }) else { return nil }
+            let assetsURL = backgroundPackage.appendingPathComponent("assets", isDirectory: true)
+            let assets = (try? fileManager.contentsOfDirectory(at: assetsURL, includingPropertiesForKeys: nil, options: [])) ?? []
+            let jpgs = assets
+                .filter { $0.lastPathComponent.lowercased().hasSuffix(".jpg") }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            let target = jpgs.first(where: { $0.lastPathComponent == "0.jpg" }) ?? jpgs.first
+            if let target = target, let data = try? Data(contentsOf: target) {
+                return data
+            }
+            return nil
+        }
+        return nil
+    }
+
     /// 读一张描述符文件夹的对照字段（只读，句柄由调用方持有）。
     /// 布局：<uuid>/versions/<n>/contents/<名字>.wallpaper/ 里是
     /// Wallpaper.plist 和 *.ca 包；快照在 versions/<n>/ 下。

@@ -11,9 +11,9 @@ struct ContentView: View {
                 .tabItem {
                     Label("制作", systemImage: "plus.circle")
                 }
-            VaultView()
+            InstalledView()
                 .tabItem {
-                    Label("金库", systemImage: "archivebox")
+                    Label("已装锁屏", systemImage: "rectangle.on.rectangle")
                 }
         }
     }

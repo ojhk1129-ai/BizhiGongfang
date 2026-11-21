@@ -1114,3 +1114,90 @@ injectToLockScreen 都在。
 6. 导入 .tendies：把之前导出的 .tendies 用文件 App 打开，选“拷贝到壁纸工坊”
    或在金库里点导入，看金库列表里有没有；点进详情分享 .tendies。
 7. 景深、视频：只剩一键写入 + 导出 .tendies，确认两个按钮都在。
+
+## 构建 #26（2026-11-21，视频 12 秒 + App 图标 + 已装锁屏管理）
+
+### 1. 视频壁纸改 12 秒
+
+- `BizhiGongfang/LivePhoto/VideoCropper.swift`：裁剪从中间 3 秒改成中间
+  12 秒（不足 12 秒用全长），stillImageTime 还是裁剪后视频的一半。
+- `BizhiGongfang/Inject/DescriptorBuilder.swift`：抽帧帧率自适应——
+  `min(源视频帧率, 15, 150/时长)`，总帧数不超过 150 帧（Camlo 建议的
+  安全上限）。3 秒视频还是 15fps → 45 帧；12 秒视频降到 12.5fps →
+  150 帧。只改 `buildDescriptor`（视频壁纸那条路），变身/景深的
+  `buildDescriptorFromDrawer`（45 帧）和 3 秒预览 MOV 不动。
+- `BizhiGongfang/Views/VideoEditorView.swift`：注释里的“3 秒”改成“12 秒”。
+
+### 2. App 图标
+
+- 新建 `BizhiGongfang/Assets.xcassets/AppIcon.appiconset/`：1024×1024
+  图标（两张照片框叠在一起变身，紫蓝渐变 + 星星），`AppIcon-1024.png`。
+- `project.yml` 加 `ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon`。
+  之前项目里没有任何图标，装上是空白图标，不好看。
+
+### 3. 金库不要了，改成“已装锁屏”管理
+
+用户说金库不要了：.tendies 的导入和存储整个删掉，只保留已装锁屏管理。
+
+- 删文件：`BizhiGongfang/Export/TendiesImporter.swift`（.tendies 导入）、
+  `BizhiGongfang/Models/VaultStore.swift`（金库存储）、
+  `BizhiGongfang/Views/VaultView.swift`（金库界面）。
+- 新建 `BizhiGongfang/Views/InstalledView.swift`：已装锁屏管理（原来
+  VaultView 里的“已装锁屏”分组，分段选择器去掉，整个页面就是管理列表）。
+- `BizhiGongfang/ContentView.swift`：TabView 第三个 Tab 从“金库”换成
+  “已装锁屏”（InstalledView）。三个 Tab 现在是：我的壁纸 / 制作 / 已装锁屏。
+- 导出 .tendies 保留：`TendiesExporter.swift` 和三个编辑器、记录详情页里的
+  “导出 .tendies”按钮不动，只删导入和存储。
+
+已装锁屏列表：调 `PosterBoardStore.allDescriptorSummaries` 拿锁屏里已装的
+描述符；每行缩略图（`thumbnailJPEG` 逐张后台读）+ 名字 + 徽章 + 编号/
+帧数/UUID 前 8 位；列表顶“共 N 张”+ 刷新按钮 + 搜索框（按名字或 UUID
+过滤）。名字：本地记录里有这个 uuid 就用记录名；没有就用描述符自带
+name；都没有显示“其他（UUID 前 8 位）”。
+
+**删除**：只有本 App 写入的才显示红色垃圾桶按钮——判断是编号在
+10100...19999 之间，或 uuid 在 WallpaperStore 记录的 injectedPosterUUID
+里，满足任一即可。其他的只显示“系统/其他”，没有删除按钮。
+**Pocket Poster 的壁纸既不在这个区间里，也不在我们的记录里，所以不会
+出现删除按钮**，不会误删。删除流程：点垃圾桶 → 弹确认框（名字 + UUID
+前 8 位 + “删后要去多任务界面把 PosterBoard 划掉，画廊里才看不到”）→
+确认后调 `deleteDescriptor`（主容器 + 镜像容器 + 画廊索引一起清）→
+成功从列表去掉这一行，uuid 在本地记录里就清掉 injected 标记。
+
+### 上传清单（构建 #26）
+
+仓库里原来就有的文件，传上去替换（整文件替换）：
+
+1. `BizhiGongfang/LivePhoto/VideoCropper.swift`
+2. `BizhiGongfang/Inject/DescriptorBuilder.swift`
+3. `BizhiGongfang/Views/VideoEditorView.swift`
+4. `BizhiGongfang/ContentView.swift`
+5. `project.yml`
+
+新建文件（Add file → Create new file，传到对应文件夹）：
+
+6. `BizhiGongfang/Assets.xcassets/Contents.json`
+7. `BizhiGongfang/Assets.xcassets/AppIcon.appiconset/Contents.json`
+8. `BizhiGongfang/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png`（图片文件，用 Upload files 传）
+9. `BizhiGongfang/Views/InstalledView.swift`
+
+删除的文件（仓库里有，删掉）：
+
+10. `BizhiGongfang/Export/TendiesImporter.swift`
+11. `BizhiGongfang/Models/VaultStore.swift`
+12. `BizhiGongfang/Views/VaultView.swift`
+
+> 注意：#25 传上去的 TendiesImporter.swift、VaultStore.swift、VaultView.swift
+> 这三个文件要从仓库里删掉（仓库页面点文件右上角三个点 → Delete file）。
+> 其余文件不动。传文件里面的内容，不要拖文件夹；传到对应的文件夹里。
+> 传完去 Actions 看构建结果。
+
+### 测试顺序
+
+1. 装上新版，主屏幕看 App 图标是不是新图标（不是空白）。
+2. 做一张视频壁纸：选一段长视频，一键写入，看是不是 12 秒的动态。
+3. 底部 Tab 是：我的壁纸 / 制作 / 已装锁屏，没有“金库”了。
+4. 已装锁屏：看列表里有没有锁屏里装的壁纸（缩略图、名字、编号），
+   点刷新、搜一个名字试试；找一张我们写的（徽章“本 App”），点垃圾桶删，
+   确认框、删除、去多任务界面把 PosterBoard 划掉，画廊里看不到才算删干净。
+5. Pocket Poster 的壁纸（地球女孩、白发剑女孩）必须没有删除按钮，不要碰。

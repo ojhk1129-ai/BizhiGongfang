@@ -2,7 +2,7 @@ import AVFoundation
 import CoreMedia
 import UIKit
 
-/// 视频壁纸：把相册视频裁剪到 3 秒，写好 Live Photo 配对元数据。
+/// 视频壁纸：把相册视频裁剪到 12 秒，写好 Live Photo 配对元数据。
 enum VideoCropper {
 
     enum CropError: LocalizedError {
@@ -48,8 +48,8 @@ enum VideoCropper {
                 guard totalSeconds > 0, totalSeconds.isFinite else {
                     throw CropError.invalidDuration
                 }
-                // 超过 3 秒取中间 3 秒，不足 3 秒用全长
-                let trimLength = min(totalSeconds, 3.0)
+                // 超过 12 秒取中间 12 秒，不足 12 秒用全长
+                let trimLength = min(totalSeconds, 12.0)
                 let trimStart = max(0, (totalSeconds - trimLength) / 2)
                 let stillTime = trimLength / 2
                 // 第一步：AVAssetExportSession 裁剪，同时写 content identifier

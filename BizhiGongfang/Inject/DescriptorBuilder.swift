@@ -98,7 +98,8 @@ enum DescriptorBuilder {
         }
     }
 
-    /// 抽帧帧率：3 秒视频 → 45 帧，在 PosterBoard 的安全区内（Camlo 建议最多 150 帧）。
+    /// 抽帧帧率：上限 15fps，但总帧数不超过 150 帧（Camlo 建议的安全上限）。
+    /// 3 秒视频 → 45 帧；12 秒视频自适应降到 12.5fps → 150 帧。
     static let outputFrameRate: Double = 15
     /// 帧长边上限（像素），和 Placard 一致。
     static let maximumLongEdge: CGFloat = 1920
@@ -148,7 +149,7 @@ enum DescriptorBuilder {
             throw BuildError.invalidVideo
         }
         let outputSize = await devicePortraitOutputSize()
-        let outputFrameRate = min(Double(nominalFrameRate), outputFrameRate)
+        let outputFrameRate = min(Double(nominalFrameRate), Self.outputFrameRate, 150.0 / durationSeconds)
 
         let identifier = nextDescendingIdentifier()
         let descriptorURL = workspace.appendingPathComponent(UUID().uuidString, isDirectory: true)

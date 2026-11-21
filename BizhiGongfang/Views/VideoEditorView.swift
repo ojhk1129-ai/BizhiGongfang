@@ -2,7 +2,7 @@ import AVFoundation
 import AVKit
 import SwiftUI
 
-/// 视频壁纸：从相册选一段视频，裁剪到 3 秒，导出为 Live Photo。
+/// 视频壁纸：从相册选一段视频，裁剪到 12 秒，导出为 Live Photo。
 struct VideoEditorView: View {
     @EnvironmentObject private var store: WallpaperStore
 
@@ -143,7 +143,7 @@ struct VideoEditorView: View {
         }
     }
 
-    /// 导出 .tendies：先裁剪到 3 秒，再抽帧做描述符、打包成 .tendies，
+    /// 导出 .tendies：先裁剪到 12 秒，再抽帧做描述符、打包成 .tendies，
     /// 弹分享面板（可存到文件、隔空投送、发给 Camlo 导入安装）。
     /// 不依赖直写可用性：不用 App Group，不走 worse_query。
     private func exportTendies() {
@@ -182,7 +182,7 @@ struct VideoEditorView: View {
         }
     }
 
-    /// 一键写入锁屏：先裁剪到 3 秒，再抽帧做描述符、写进 PosterBoard。
+    /// 一键写入锁屏：先裁剪到 12 秒，再抽帧做描述符、写进 PosterBoard。
     private func injectToLockScreen() {
         guard let videoURL = videoURL, !isInjecting else { return }
         isInjecting = true
