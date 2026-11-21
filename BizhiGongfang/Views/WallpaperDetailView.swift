@@ -18,7 +18,7 @@ struct WallpaperDetailView: View {
     @State private var alertMessage: String?
     @State private var showAlert = false
 
-    /// 这条记录有没有存 video.mov（有才显示“播放动态”，视频/景深记录
+    /// 这条记录有没有存 video.mov（有才显示“播放动态”，视频记录
     /// 导出 .tendies 时也要用它）。
     private var hasVideo: Bool {
         FileManager.default.fileExists(atPath: store.videoURL(for: item).path)
@@ -64,16 +64,14 @@ struct WallpaperDetailView: View {
                                 ProgressView()
                                     .frame(maxWidth: .infinity)
                             } else {
-                                Label(item.kind == .morph ? "导出 .tendies（静态版）" : "导出 .tendies", systemImage: "square.and.arrow.up")
+                                Label("导出 .tendies", systemImage: "square.and.arrow.up")
                                     .frame(maxWidth: .infinity)
                             }
                         }
                         .buttonStyle(.bordered)
                         .disabled(isExportingTendies)
 
-                        Text(item.kind == .morph
-                             ? "变身记录只存了静态图，导出的是静态版 .tendies；要变身效果请回变身页重新做。导出后用 Camlo「导入外部 .tendies 壁纸包」安装。"
-                             : "导出后用 Camlo「导入外部 .tendies 壁纸包」安装；不依赖直写。")
+                        Text("导出后用 Camlo「导入外部 .tendies 壁纸包」安装；不依赖直写。")
                             .font(.footnote)
                             .foregroundColor(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -132,8 +130,7 @@ struct WallpaperDetailView: View {
         }
     }
 
-    /// 导出 .tendies：视频/景深记录用存的 MOV 重建描述符再打包；
-    /// 变身记录没有原图 B（只存了静态图和 MOV），用静态图降级导出静态版。
+    /// 导出 .tendies：用存的 MOV 重建描述符再打包。
     /// 弹分享面板（可存到文件、隔空投送、发给 Camlo 导入安装）。
     /// 不依赖直写可用性。
     private func exportTendies() {
@@ -141,19 +138,10 @@ struct WallpaperDetailView: View {
         isExportingTendies = true
         Task {
             do {
-                let url: URL
-                if item.kind == .morph {
-                    guard let data = try? Data(contentsOf: store.stillURL(for: item)),
-                          let image = UIImage(data: data) else {
-                        throw TendiesExporter.ExportError.stillImageMissing
-                    }
-                    url = try TendiesExporter.exportSinglePhoto(image: image, name: item.name)
-                } else {
-                    url = try await TendiesExporter.exportVideo(
-                        videoURL: store.videoURL(for: item),
-                        name: item.name
-                    )
-                }
+                let url = try await TendiesExporter.exportVideo(
+                    videoURL: store.videoURL(for: item),
+                    name: item.name
+                )
                 await MainActor.run {
                     self.isExportingTendies = false
                     self.tendiesURL = url
