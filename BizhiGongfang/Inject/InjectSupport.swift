@@ -100,7 +100,8 @@ enum InjectFlow {
         kind: WallpaperItem.Kind,
         still: UIImage,
         stillJPEGData: Data,
-        store: WallpaperStore
+        store: WallpaperStore,
+        effects: WallpaperEffects = .init()
     ) async throws -> String {
         guard PosterBoardStore.isAvailable else {
             throw InjectError.missingAppGroup
@@ -110,7 +111,7 @@ enum InjectFlow {
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: workspace) }
 
-        let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace)
+        let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace, effects: effects)
         let appHash = try PosterBoardStore.findPosterBoardHash()
         let written = try PosterBoardStore.writeDescriptors(
             appHash: appHash,
@@ -148,7 +149,8 @@ enum InjectFlow {
         kind: WallpaperItem.Kind,
         still: UIImage,
         stillJPEGData: Data,
-        store: WallpaperStore
+        store: WallpaperStore,
+        effects: WallpaperEffects = .init()
     ) async throws -> String {
         guard PosterBoardStore.isAvailable else {
             throw InjectError.missingAppGroup
@@ -165,7 +167,8 @@ enum InjectFlow {
             duration: duration,
             outputSize: outputSize,
             drawer: drawer,
-            in: workspace
+            in: workspace,
+            effects: effects
         )
         let appHash = try PosterBoardStore.findPosterBoardHash()
         let written = try PosterBoardStore.writeDescriptors(
@@ -211,7 +214,8 @@ enum InjectFlow {
         foregroundPNG: Data? = nil,
         nightLockJPEG: Data? = nil,
         nightUnlockJPEG: Data? = nil,
-        alwaysOnJPEG: Data? = nil
+        alwaysOnJPEG: Data? = nil,
+        effects: WallpaperEffects = .init()
     ) async throws -> String {
         guard PosterBoardStore.isAvailable else {
             throw InjectError.missingAppGroup
@@ -222,8 +226,10 @@ enum InjectFlow {
         defer { try? FileManager.default.removeItem(at: workspace) }
 
         let outputSize = CGSize(width: 1080, height: 1920)
+        // 构建 #27：滤镜在这里套（renderTwoStateJPEGs 里给 A/B 各套一次），
+        // 调用方传进来的 imageA/imageB 是原图，预览/MOV 另外套（不重复套）。
         guard let (lockJPEG, unlockJPEG) = DescriptorBuilder.renderTwoStateJPEGs(
-            imageA: imageA, imageB: imageB, size: outputSize
+            imageA: imageA, imageB: imageB, size: outputSize, filter: effects.filter
         ) else {
             throw DescriptorBuilder.BuildError.frameEncodingFailed
         }
@@ -236,6 +242,7 @@ enum InjectFlow {
             nightLockJPEG: nightLockJPEG,
             nightUnlockJPEG: nightUnlockJPEG,
             alwaysOnJPEG: alwaysOnJPEG,
+            effects: effects,
             in: workspace
         )
         let appHash = try PosterBoardStore.findPosterBoardHash()
