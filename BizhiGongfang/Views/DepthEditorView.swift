@@ -31,6 +31,11 @@ struct DepthEditorView: View {
 
     @State private var image: UIImage?
     @State private var motionEnabled = true
+    @State private var effects = WallpaperEffects()
+    // 构建 #27：滤镜后的图（缓存起来，陀螺仪预览 30Hz 刷新时不重复算滤镜）。
+    // drawer 画帧和预览都用这张；builder 够不到 drawer 里的源图，滤镜由
+    // 编辑器在造 drawer 之前套好（粒子/浮动/缩放仍由 effects 透传）。
+    @State private var filteredImage: UIImage?
     @State private var showPicker = false
     @State private var isInjecting = false
     @State private var isExportingTendies = false
@@ -53,6 +58,7 @@ struct DepthEditorView: View {
                 previewSection
                 motionSection
                 photoSection
+                effectsSection
                 exportSection
             }
             .padding()
@@ -64,6 +70,7 @@ struct DepthEditorView: View {
                 guard let result = results.first else { return }
                 loadPickedImage(from: result) { picked in
                     image = picked
+                    refreshFilteredImage()
                 }
             }
         }
@@ -93,6 +100,38 @@ struct DepthEditorView: View {
                 motion.stop()
             }
         }
+        .onChange(of: effects.filter) { _, _ in refreshFilteredImage() }
+    }
+
+    /// 滤镜变化或换图时重算一次缓存的滤镜图（.none 时就是原图）。
+    private func refreshFilteredImage() {
+        filteredImage = image.map { WallpaperEffects.apply(effects.filter, to: $0) }
+    }
+
+    /// 特效（构建 #27）：粒子 / 环境浮动 / 缓慢缩放 / 滤镜。
+    /// 滤镜实时显示在预览里；粒子、浮动、缩放是 CAML 动画，只在锁屏上出现。
+    private var effectsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("特效")
+                .font(.headline)
+            Picker("粒子", selection: $effects.particle) {
+                ForEach(ParticleStyle.allCases, id: \.self) { style in
+                    Text(style.displayName).tag(style)
+                }
+            }
+            .pickerStyle(.segmented)
+            Toggle("环境浮动", isOn: $effects.ambient)
+            Toggle("缓慢缩放", isOn: $effects.slowZoom)
+            Picker("滤镜", selection: $effects.filter) {
+                ForEach(WallpaperFilter.allCases, id: \.self) { filter in
+                    Text(filter.displayName).tag(filter)
+                }
+            }
+            .pickerStyle(.menu)
+            Text("粒子、浮动、缩放只在锁屏上出现，预览里看不到；滤镜实时显示在预览里。")
+                .font(.footnote)
+                .foregroundColor(.secondary)
+        }
     }
 
     private var previewSection: some View {
@@ -100,7 +139,7 @@ struct DepthEditorView: View {
             RoundedRectangle(cornerRadius: 16)
                 .fill(Color.secondary.opacity(0.15))
                 .aspectRatio(9.0 / 16.0, contentMode: .fit)
-            if let image = image {
+            if let image = filteredImage {
                 GeometryReader { geometry in
                     Image(uiImage: image)
                         .resizable()
@@ -204,13 +243,16 @@ struct DepthEditorView: View {
         isExportingTendies = true
         Task {
             do {
-                let drawer = depthDrawer(image: image)
+                // 构建 #27：drawer 用滤镜后的图（滤镜由编辑器预套）；
+                // 粒子/浮动/缩放由 effects 透传给 builder。
+                let drawer = depthDrawer(image: filteredImage ?? image)
                 let url = try TendiesExporter.exportFromDrawer(
                     frameCount: Int(VideoRenderer.duration * DescriptorBuilder.outputFrameRate),
                     duration: VideoRenderer.duration,
                     outputSize: VideoRenderer.outputSize,
                     drawer: drawer,
-                    name: WallpaperStore.defaultName(for: .depth)
+                    name: WallpaperStore.defaultName(for: .depth),
+                    effects: effects
                 )
                 await MainActor.run {
                     self.isExportingTendies = false
@@ -233,7 +275,8 @@ struct DepthEditorView: View {
         isInjecting = true
         let identifier = LivePhotoMetadata.newIdentifier()
         let stillTime = VideoRenderer.duration / 2
-        let drawer = depthDrawer(image: image)
+        // 构建 #27：drawer 用滤镜后的图（和预览一致）；特效透传给 inject。
+        let drawer = depthDrawer(image: filteredImage ?? image)
         VideoRenderer.renderVideo(identifier: identifier, stillImageTime: stillTime, drawer: drawer) { result in
             switch result {
             case .failure(let error):
@@ -266,7 +309,8 @@ struct DepthEditorView: View {
                             kind: .depth,
                             still: still,
                             stillJPEGData: jpegData,
-                            store: self.store
+                            store: self.store,
+                            effects: self.effects
                         )
                         await MainActor.run {
                             self.isInjecting = false
