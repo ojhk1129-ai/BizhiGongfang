@@ -94,12 +94,14 @@ enum TendiesExporter {
         foregroundPNG: Data? = nil,
         nightLockJPEG: Data? = nil,
         nightUnlockJPEG: Data? = nil,
-        alwaysOnJPEG: Data? = nil
+        alwaysOnJPEG: Data? = nil,
+        effects: WallpaperEffects = .init()
     ) throws -> URL {
         let workspace = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: workspace) }
+        // 构建 #27：滤镜在这里套（renderTwoStateJPEGs 里给 A/B 各套一次）。
         guard let (lockJPEG, unlockJPEG) = DescriptorBuilder.renderTwoStateJPEGs(
-            imageA: imageA, imageB: imageB, size: frameSize
+            imageA: imageA, imageB: imageB, size: frameSize, filter: effects.filter
         ) else {
             throw ExportError.frameEncodingFailed
         }
@@ -112,6 +114,7 @@ enum TendiesExporter {
             nightLockJPEG: nightLockJPEG,
             nightUnlockJPEG: nightUnlockJPEG,
             alwaysOnJPEG: alwaysOnJPEG,
+            effects: effects,
             in: workspace
         )
         return try exportDescriptor(descriptor, name: name)
@@ -135,7 +138,8 @@ enum TendiesExporter {
         duration: TimeInterval,
         outputSize: CGSize,
         drawer: @escaping VideoRenderer.FrameDrawer,
-        name: String
+        name: String,
+        effects: WallpaperEffects = .init()
     ) throws -> URL {
         let workspace = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: workspace) }
@@ -144,16 +148,17 @@ enum TendiesExporter {
             duration: duration,
             outputSize: outputSize,
             drawer: drawer,
-            in: workspace
+            in: workspace,
+            effects: effects
         )
         return try exportDescriptor(descriptor, name: name)
     }
 
     /// 视频 MOV → 45 帧描述符 → .tendies（记录页的视频/景深记录用）。
-    static func exportVideo(videoURL: URL, name: String) async throws -> URL {
+    static func exportVideo(videoURL: URL, name: String, effects: WallpaperEffects = .init()) async throws -> URL {
         let workspace = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: workspace) }
-        let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace)
+        let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace, effects: effects)
         return try exportDescriptor(descriptor, name: name)
     }
 
