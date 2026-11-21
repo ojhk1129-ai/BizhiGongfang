@@ -50,7 +50,7 @@ enum ForegroundCutout {
         let maskBuffer: CVPixelBuffer
         do {
             maskBuffer = try observation.generateScaledMaskForImage(
-                forInstances: Set(observation.allInstances), from: handler)
+                forInstances: observation.allInstances, from: handler)
         } catch {
             return nil
         }
