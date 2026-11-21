@@ -976,3 +976,141 @@ com.apple.metadata:com_apple_backup_excludeItem」。所有者一样，权限和
   不在描述符；之后走 .tendies + Camlo 这条路。
 - 13p 和 Camlo 导入都没有——2 态 CAML 的写法还有问题，把 Camlo 写好的
   “冰岛·黑沙玄光”描述符读出来对照（诊断页能列容器内描述符）。
+
+## 构建 #24 修复（2026-11-21，第一次编失败，exit code 65）
+
+运行 #2（提交 00373de，15:16）失败，只错 TendiesExporter.swift 一个文件，
+4 处编译错误：
+
+1. `FileManager.unzipItem` 不存在——工作流用的 Xcode 16.4 SDK 里没有这个 API。
+   改：自检不再解压，改成直接读 ZIP 中央目录，确认里面有
+   `descriptors/<UUID>/…/Wallpaper.plist`。注意 EOCD 里中央目录的起始偏移
+   在偏移 16（偏移 12 是中央目录字节数），第一次写错成 12 已改回。
+2. `dosDateTime` 里一行表达式太复杂，编译器类型检查超时。
+   改：小时/分钟/秒三段分开算再拼。
+3. 两处 `withUnsafeBytes` 解析到实例方法。改：写成 `Swift.withUnsafeBytes`。
+
+只改这一个文件，传上去替换 `BizhiGongfang/Export/TendiesExporter.swift`，
+再编一次。其他文件不用动。
+
+## 构建 #25（2026-11-21，删 + 加 Camlo 功能）
+
+### 先删掉的 3 样（用户 16:03 确认，只删这些）
+
+1. **交叉淡化**：变身只留滑动。MorphEditorView 的 Mode 枚举、模式选择器删掉；
+   morphDrawer 只画滑动；DescriptorBuilder.buildTwoStateMorphDescriptor 和
+   twoStateCAML 的 slide 参数删掉，CAML 里 CALayer2 固定走 position.x 滑动；
+   InjectSupport.injectTwoStateMorph 和 TendiesExporter.exportTwoStateMorph
+   的 slide 参数也删掉。
+2. **导出 Live Photo**：删 `BizhiGongfang/LivePhoto/LivePhotoExporter.swift`
+   整个文件；三个编辑器的“导出 Live Photo 到相册”按钮 + exportLivePhoto()
+   + isExporting 状态删掉；WallpaperDetailView 的“保存到相册”“分享”按钮
+   + saveToPhotos() + isSaving 删掉，底部“去照片设 Live Photo 为墙纸”说明
+   删掉；project.yml 的 NSPhotoLibraryAddUsageDescription 删掉。
+   （LivePhotoMetadata 还在——injectToLockScreen 还用它的 jpegData；
+   VideoRenderer.renderVideo 还在——inject 还用它。）
+3. **静态写入探针**：MorphEditorView 的“静态写入（单帧照片）”按钮 +
+   injectSinglePhotoProbe() + isWritingStatic 删掉。
+   （InjectFlow.injectSinglePhoto 没删——诊断页第 7 步还在用它。）
+
+### 一键写入锁屏保留（用户 16:28 纠正两次）
+
+“静态写入”指的是上面第 3 项的探针按钮，不是直写本身。一键写入锁屏是
+核心功能，必须保留。中间一度误删了整个注入系统（15 个文件），已从构建
+#24 的 zip 完整恢复：Inject/（PosterBoardStore、worse_query、InjectSupport、
+InjectFlow、InjectButton、InjectDiagnosticsView、ControlDescriptor、
+NeoSpring、entitlements、Bridging Header）全部回来，三个编辑器的
+injectToLockScreen 都在。
+
+### 新加的 Camlo 功能（用户选“一起加上”，16:27）
+
+1. **变身动画曲线**（3 条，不要丝滑叠化——那就是交叉淡化，已删）：
+   - 上滑揭幕（默认）：B 从底部向上滑入（position.y 2880→960，0.6 秒）。
+   - 破屏觉醒：B 从小放大 + 淡入（transform.scale 0.6→1 + opacity 0→1，0.8 秒）。
+   - 圣光瞬变：B 瞬间出现（opacity 0→1，0.15 秒 linear）。
+   - DescriptorBuilder 新增公开枚举 MorphCurve（CaseIterable），
+     buildTwoStateMorphDescriptor / twoStateCAML / injectTwoStateMorph /
+     exportTwoStateMorph 都接受 curve 参数（默认 revealUp）。
+     MorphEditorView 加曲线分段选择器，预览 morphDrawer 按曲线画。
+2. **AI 主体抠图**：新建 `BizhiGongfang/LivePhoto/ForegroundCutout.swift`
+   （Vision VNGenerateForegroundInstanceMaskRequest 生成 mask，
+   CIBlendWithAlphaMask 合成带透明的抠图，找不到主体返回 nil 跳过）。
+   MorphEditorView 加开关（默认开）；开启时抠图写进 Floating.ca 的
+   assets/foreground.png，并在 Floating.ca 写一个显示它的图层
+   （floatingCAML，盖在时钟前面）。
+3. **昼夜双生**：MorphEditorView 加开关，开启后多一组夜间 A/B 照片选择。
+   夜图成对时写一套 Dark 变体包（9183.Custom_Dark_*），Wallpaper.plist
+   的 lockAndHome 加 "dark" 入口（appearanceAware 本来就是 true）。
+4. **熄屏常显图**：MorphEditorView 加可选的常显图选择，选中后写进
+   `versions/1/contents/alwaysOn.jpg`（没往 otherMetadata 里记——种子
+   otherMetadata 是 NSKeyedArchiver 归档，加顶层键会写坏）。
+5. **裁剪**：新建 `BizhiGongfang/Views/CropView.swift`（9:16 框，拖动 +
+   双指缩放，确定后裁出 1080×1920）。照片 A/B、夜间、常显 5 个槽位
+   都能点“裁剪”进裁剪页。
+6. **导入 .tendies + 壁纸金库**：
+   - 新建 `BizhiGongfang/Export/TendiesImporter.swift`（纯 Swift 手写 ZIP
+     解压，stored + deflate 都支持，自己写的 inflate，Python 验证过；
+     security-scoped URL 处理；校验：不是 ZIP / 没有 descriptors/ /
+     没有 Wallpaper.plist 都抛中文错）。
+   - 新建 `BizhiGongfang/Models/VaultStore.swift`（金库在 Documents/Vault/
+     <包 UUID>/，元数据 Documents/vault.json；add / delete / 分享用
+     TendiesExporter.exportDescriptor 重新打包）。
+   - 新建 `BizhiGongfang/Views/VaultView.swift`（列表：缩略图 + 名字 +
+     帧数 + 导入日期，左滑删除；详情：大图 + “分享 .tendies” + 删除；
+     “导入”按钮用 .fileImporter 选 .tendies / .zip）。
+   - ContentView 加第三个 Tab“金库”（archivebox 图标）。MakeView 没动。
+   - 只做“存进金库 + 再导出分享”，不做直写安装，不改 identifier。
+
+### 没加的
+
+- Camlo 内置预设画廊：没有现成图片可复制，不加。
+- 夜间 Floating 抠图：抠图只按白天 A 图算，深色模式下时钟遮挡效果会消失
+  （已知，待真机验证后再看）。
+
+### 未在真机验证的点
+
+- `awaken` 用的 transform.scale keyPath 是标准 Core Animation 写法，
+  但没验证过 PosterBoard 是否认。
+- TendiesImporter 的 inflate 是纯 Swift 逐位解码，几 MB 的包导入要 1–3 秒。
+- ZIP64 不支持（>4GB 的包会报错，实际壁纸包只有 1–2MB）。
+
+### 上传清单（构建 #25）
+
+仓库里原来就有的文件，传上去替换（整文件替换）：
+
+1. `BizhiGongfang/Inject/DescriptorBuilder.swift`
+2. `BizhiGongfang/Inject/InjectSupport.swift`
+3. `BizhiGongfang/Export/TendiesExporter.swift`
+4. `BizhiGongfang/Views/MorphEditorView.swift`
+5. `BizhiGongfang/Views/DepthEditorView.swift`
+6. `BizhiGongfang/Views/VideoEditorView.swift`
+7. `BizhiGongfang/Views/WallpaperDetailView.swift`
+8. `BizhiGongfang/ContentView.swift`
+9. `project.yml`
+
+新建文件（Add file → Create new file，传到对应文件夹）：
+
+10. `BizhiGongfang/LivePhoto/ForegroundCutout.swift`
+11. `BizhiGongfang/Views/CropView.swift`
+12. `BizhiGongfang/Export/TendiesImporter.swift`
+13. `BizhiGongfang/Models/VaultStore.swift`
+14. `BizhiGongfang/Views/VaultView.swift`
+
+删除的文件（仓库里有，删掉）：
+
+15. `BizhiGongfang/LivePhoto/LivePhotoExporter.swift`
+
+> 其余文件不动。注意：传文件里面的内容，不要拖文件夹；传到对应的文件夹里。
+> 传完去 Actions 看构建结果。
+
+### 测试顺序
+
+1. 编一张变身壁纸：选 A/B 两张图，三个曲线各试一次，一键写入，注销，
+   去画廊 13p 区看有没有变身 tile，点进设为锁屏，上滑解锁看 A→B 变不变。
+2. AI 抠图开关开/关各试一次：开的时候主体有没有破框遮住时钟。
+3. 昼夜双生：开开关，选夜间 A/B，写入后切深色模式看换不换图。
+4. 熄屏常显图：选一张常显图，写入（只看不报错）。
+5. 裁剪：选图后点裁剪，拖动缩放，确定后看图有没有按框裁。
+6. 导入 .tendies：把之前导出的 .tendies 用文件 App 打开，选“拷贝到壁纸工坊”
+   或在金库里点导入，看金库列表里有没有；点进详情分享 .tendies。
+7. 景深、视频：只剩一键写入 + 导出 .tendies，确认两个按钮都在。

@@ -83,11 +83,18 @@ enum TendiesExporter {
     /// 变身：两张照片 → 2 态滑动解锁描述符 → .tendies。
     /// 和一键写入（injectTwoStateMorph）是同一个描述符，只是最后一步
     /// 改成打包分享，不写进 PosterBoard。
+    /// 只有滑动一种模式（交叉淡化已删）。
+    /// 构建 #25：curve / foregroundPNG / 夜图 / 常显图由调用方算好传进来，
+    /// 直接透传给 buildTwoStateMorphDescriptor。
     static func exportTwoStateMorph(
         imageA: UIImage,
         imageB: UIImage,
-        slide: Bool,
-        name: String
+        name: String,
+        curve: DescriptorBuilder.MorphCurve = .revealUp,
+        foregroundPNG: Data? = nil,
+        nightLockJPEG: Data? = nil,
+        nightUnlockJPEG: Data? = nil,
+        alwaysOnJPEG: Data? = nil
     ) throws -> URL {
         let workspace = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: workspace) }
@@ -100,7 +107,11 @@ enum TendiesExporter {
             lockJPEG: lockJPEG,
             unlockJPEG: unlockJPEG,
             size: frameSize,
-            slide: slide,
+            curve: curve,
+            foregroundPNG: foregroundPNG,
+            nightLockJPEG: nightLockJPEG,
+            nightUnlockJPEG: nightUnlockJPEG,
+            alwaysOnJPEG: alwaysOnJPEG,
             in: workspace
         )
         return try exportDescriptor(descriptor, name: name)

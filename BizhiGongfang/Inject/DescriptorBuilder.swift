@@ -30,6 +30,74 @@ enum DescriptorBuilder {
         }
     }
 
+    /// 变身动画曲线（构建 #25，Camlo 式变身动画）。
+    /// 每条曲线定义 CALayer2 的动画属性（keyPath + Locked/Unlock 目标值）+
+    /// 时长 + 缓动；twoStateCAML 和 MorphEditorView 的预览 drawer 共用。
+    /// 注意：不含丝滑叠化（= 交叉淡化，已删）。
+    enum MorphCurve: String, CaseIterable {
+        case revealUp   // 上滑揭幕
+        case awaken     // 破屏觉醒
+        case flash      // 圣光瞬变
+
+        var displayName: String {
+            switch self {
+            case .revealUp: return "上滑揭幕"
+            case .awaken: return "破屏觉醒"
+            case .flash: return "圣光瞬变"
+            }
+        }
+
+        /// 过渡时长（秒）。
+        var duration: Double {
+            switch self {
+            case .revealUp: return 0.6
+            case .awaken: return 0.8
+            case .flash: return 0.15
+            }
+        }
+
+        /// 缓动函数（CAML timingFunction 名）。
+        var timingFunction: String {
+            switch self {
+            case .revealUp, .awaken: return "easeInEaseOut"
+            case .flash: return "linear"
+            }
+        }
+
+        /// 动画属性：(keyPath, Locked 态值, Unlock 态值)。
+        /// position.y 的值随帧尺寸算，所以用函数而不是计算属性。
+        func animatedProperties(width: Int, height: Int) -> [(keyPath: String, locked: String, unlocked: String)] {
+            let cy = height / 2
+            switch self {
+            case .revealUp:
+                // B 从底部向上滑入：Locked 时 y 在屏外下方，Unlock 时回中心。
+                return [("position.y", "\(cy + height)", "\(cy)")]
+            case .awaken:
+                // B 从小放大 + 淡入：Locked 时缩 0.6 倍且透明，Unlock 时原大不透明。
+                return [("transform.scale", "0.6", "1"), ("opacity", "0", "1")]
+            case .flash:
+                // B 瞬间出现：只有不透明度 0→1，0.15 秒无缓动。
+                return [("opacity", "0", "1")]
+            }
+        }
+
+        /// CALayer2 在 CAML 里的初始属性（即 Locked 态的样子）。
+        /// transform 为 nil 表示不写 transform 属性（单位矩阵）。
+        func initialLayerState(width: Int, height: Int) -> (position: String, opacity: String, transform: String?) {
+            let cx = width / 2
+            let cy = height / 2
+            switch self {
+            case .revealUp:
+                return ("\(cx) \(cy + height)", "1", nil)
+            case .awaken:
+                // 初始缩 0.6 倍 + 透明；transform 是 16 个数的 CATransform3D。
+                return ("\(cx) \(cy)", "0", "0.6 0 0 0 0 0.6 0 0 0 0 1 0 0 0 0 1")
+            case .flash:
+                return ("\(cx) \(cy)", "0", nil)
+            }
+        }
+    }
+
     /// 抽帧帧率：3 秒视频 → 45 帧，在 PosterBoard 的安全区内（Camlo 建议最多 150 帧）。
     static let outputFrameRate: Double = 15
     /// 帧长边上限（像素），和 Placard 一致。
@@ -47,6 +115,12 @@ enum DescriptorBuilder {
     static let backgroundFileName = "9183.Custom_Background-390w-844h@3x~iphone.ca"
     static let floatingFileName = "9183.Custom_Floating-390w-844h@3x~iphone.ca"
     static let foregroundFileName = "9183.Custom_Foreground-390w-844h@3x~iphone.ca"
+    /// 昼夜双生（构建 #25）：夜间 Dark 变体的 3 个 .ca 包，照 Camlo 的
+    /// 7401 WWDC_2022_Dark 变体思路。只在有夜图时写，Wallpaper.plist 里
+    /// 的 lockAndHome 加一个 "dark" 入口指向它们（见 makeDescriptorMetadata）。
+    static let darkBackgroundFileName = "9183.Custom_Dark_Background-390w-844h@3x~iphone.ca"
+    static let darkFloatingFileName = "9183.Custom_Dark_Floating-390w-844h@3x~iphone.ca"
+    static let darkForegroundFileName = "9183.Custom_Dark_Foreground-390w-844h@3x~iphone.ca"
 
     /// 从 MOV 生成一个描述符文件夹（放在 workspace 里），返回文件夹地址。
     /// 调用方负责把文件夹写进 PosterBoard 后清理 workspace。
@@ -302,18 +376,34 @@ enum DescriptorBuilder {
         return (lockJPEG, unlockJPEG)
     }
 
-    /// 2 态滑动解锁变身描述符（构建 #24，Camlo 式“真变身”）。
+    /// 把一张照片渲染成一张指定尺寸的 JPEG（aspect-fill，同 aspectFillJPEG），
+    /// 供熄屏常显图等单张图用。渲染失败返回 nil。
+    static func renderSingleJPEG(image: UIImage, size: CGSize) -> Data? {
+        aspectFillJPEG(image: image, size: size)
+    }
+
+    /// 2 态滑动解锁变身描述符（构建 #24，Camlo 式“真变身”；构建 #25 加
+    /// 动画曲线 / AI 抠图 / 昼夜双生 / 熄屏常显图）。
     /// 不再是 45 帧视频：Background .ca 的 assets 里只有两张图
     /// （lock.jpg = 照片 A，unlock.jpg = 照片 B），CAML 用 LKState 状态机：
     /// Locked 态显示 A，Unlock 态显示 B，解锁时在两者之间做过渡动画。
     /// 画廊能列出 2 态描述符、列不出 45 帧视频描述符（见 Camlo 对照），
-    /// 所以变身改走这条路。crossfade 用两层叠加 + 不透明度动画；
-    /// slide 用两层左右平移。size 是帧尺寸（1080×1920，已证实能渲染）。
+    /// 所以变身改走这条路。size 是帧尺寸（1080×1920，已证实能渲染）。
+    /// - curve：变身动画曲线（默认上滑揭幕）。
+    /// - foregroundPNG：AI 主体抠图（带透明通道的 PNG），有就写进 Floating.ca，
+    ///   盖在锁屏时钟前面；没有就保持空白 Floating。
+    /// - nightLockJPEG / nightUnlockJPEG：夜间图（都要有才生效），写进 Dark
+    ///   变体包，Wallpaper.plist 里加 "dark" 入口，深色模式自动换图。
+    /// - alwaysOnJPEG：熄屏常显图，写到 versions/1/contents/alwaysOn.jpg。
     static func buildTwoStateMorphDescriptor(
         lockJPEG: Data,
         unlockJPEG: Data,
         size: CGSize,
-        slide: Bool,
+        curve: MorphCurve = .revealUp,
+        foregroundPNG: Data? = nil,
+        nightLockJPEG: Data? = nil,
+        nightUnlockJPEG: Data? = nil,
+        alwaysOnJPEG: Data? = nil,
         in workspace: URL
     ) throws -> URL {
         let identifier = nextDescendingIdentifier()
@@ -330,28 +420,90 @@ enum DescriptorBuilder {
         try fileManager.createDirectory(at: foregroundURL, withIntermediateDirectories: true)
         try lockJPEG.write(to: assetsURL.appendingPathComponent("lock.jpg"), options: .atomic)
         try unlockJPEG.write(to: assetsURL.appendingPathComponent("unlock.jpg"), options: .atomic)
-        try makeDescriptorMetadata(
-            at: descriptorURL,
-            identifier: identifier,
-            width: Int(size.width),
-            height: Int(size.height)
-        )
-        try twoStateCAML(
-            width: Int(size.width),
-            height: Int(size.height),
-            slide: slide
-        ).write(to: animationURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
-        try indexXML(width: Int(size.width), height: Int(size.height))
-            .write(to: animationURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
-        try blankCAML()
-            .write(to: floatingURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
-        try floatingIndexXML()
-            .write(to: floatingURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
+
+        // AI 抠图：foreground.png 写进 Floating.ca 的 assets，Floating 包的
+        // main.caml 换成带抠图图层的 floatingCAML（1080×1920，和 lock.jpg 对齐）。
+        // 没有抠图时保持原来的空白 Floating。
+        if let foregroundPNG = foregroundPNG {
+            let floatingAssetsURL = floatingURL.appendingPathComponent("assets", isDirectory: true)
+            try fileManager.createDirectory(at: floatingAssetsURL, withIntermediateDirectories: true)
+            try foregroundPNG.write(to: floatingAssetsURL.appendingPathComponent("foreground.png"), options: .atomic)
+            try floatingCAML(width: Int(size.width), height: Int(size.height))
+                .write(to: floatingURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
+            try indexXML(width: Int(size.width), height: Int(size.height))
+                .write(to: floatingURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
+        } else {
+            try blankCAML()
+                .write(to: floatingURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
+            try floatingIndexXML()
+                .write(to: floatingURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
+        }
         try blankCAML()
             .write(to: foregroundURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
         try floatingIndexXML()
             .write(to: foregroundURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
+
+        // 昼夜双生：夜图成对才生效，写一套 Dark 变体包（同 3 包结构，
+        // 内容是夜图 + 同一条曲线的 CAML），Wallpaper.plist 里加 "dark" 入口。
+        let hasNight = nightLockJPEG != nil && nightUnlockJPEG != nil
+        if hasNight {
+            let darkAnimationURL = wallpaperURL.appendingPathComponent(darkBackgroundFileName, isDirectory: true)
+            let darkAssetsURL = darkAnimationURL.appendingPathComponent("assets", isDirectory: true)
+            let darkFloatingURL = wallpaperURL.appendingPathComponent(darkFloatingFileName, isDirectory: true)
+            let darkForegroundURL = wallpaperURL.appendingPathComponent(darkForegroundFileName, isDirectory: true)
+            try fileManager.createDirectory(at: darkAssetsURL, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: darkFloatingURL, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: darkForegroundURL, withIntermediateDirectories: true)
+            try nightLockJPEG!.write(to: darkAssetsURL.appendingPathComponent("night_lock.jpg"), options: .atomic)
+            try nightUnlockJPEG!.write(to: darkAssetsURL.appendingPathComponent("night_unlock.jpg"), options: .atomic)
+            try twoStateCAML(
+                width: Int(size.width),
+                height: Int(size.height),
+                curve: curve,
+                lockSrc: "assets/night_lock.jpg",
+                unlockSrc: "assets/night_unlock.jpg"
+            ).write(to: darkAnimationURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
+            try indexXML(width: Int(size.width), height: Int(size.height))
+                .write(to: darkAnimationURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
+            try blankCAML()
+                .write(to: darkFloatingURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
+            try floatingIndexXML()
+                .write(to: darkFloatingURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
+            try blankCAML()
+                .write(to: darkForegroundURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
+            try floatingIndexXML()
+                .write(to: darkForegroundURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
+            // 每个 .ca 包都要有 assetManifest.caml（见 seedDescriptorFiles）。
+            try assetManifestCAML.write(to: darkAnimationURL.appendingPathComponent("assetManifest.caml"), atomically: true, encoding: .utf8)
+            try assetManifestCAML.write(to: darkFloatingURL.appendingPathComponent("assetManifest.caml"), atomically: true, encoding: .utf8)
+            try assetManifestCAML.write(to: darkForegroundURL.appendingPathComponent("assetManifest.caml"), atomically: true, encoding: .utf8)
+        }
+
+        try makeDescriptorMetadata(
+            at: descriptorURL,
+            identifier: identifier,
+            width: Int(size.width),
+            height: Int(size.height),
+            darkBackgroundFileName: hasNight ? darkBackgroundFileName : nil,
+            darkFloatingFileName: hasNight ? darkFloatingFileName : nil,
+            darkForegroundFileName: hasNight ? darkForegroundFileName : nil
+        )
+        try twoStateCAML(
+            width: Int(size.width),
+            height: Int(size.height),
+            curve: curve
+        ).write(to: animationURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
+        try indexXML(width: Int(size.width), height: Int(size.height))
+            .write(to: animationURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
         try seedDescriptorFiles(at: descriptorURL, animationURL: animationURL, floatingURL: floatingURL, foregroundURL: foregroundURL)
+
+        // 熄屏常显图：写到 versions/1/contents/alwaysOn.jpg。
+        // 注意：不往 otherMetadata 里记——它是 NSKeyedArchiver 的
+        // PRPosterMetadata 归档，加顶层键会把它写坏，只留文件本身。
+        if let alwaysOnJPEG = alwaysOnJPEG {
+            let contentsURL = descriptorURL.appendingPathComponent("versions/1/contents", isDirectory: true)
+            try alwaysOnJPEG.write(to: contentsURL.appendingPathComponent("alwaysOn.jpg"), options: .atomic)
+        }
         return descriptorURL
     }
 
@@ -486,11 +638,17 @@ enum DescriptorBuilder {
     /// 1. com.apple.posterkit.provider.descriptor.identifier 文件内容
     /// 2. userInfo 里的 wallpaperRepresentingIdentifier
     /// 3. Wallpaper.plist 里的 identifier
+    /// darkBackgroundFileName 等：昼夜双生（构建 #25）时传 Dark 变体包名，
+    /// Wallpaper.plist 里 lockAndHome 加一个 "dark" 入口（照 Camlo 的
+    /// 7401 Dark 变体思路，appearanceAware 已是 true）；不传就是只有白天。
     private static func makeDescriptorMetadata(
         at descriptorURL: URL,
         identifier: Int,
         width: Int,
-        height: Int
+        height: Int,
+        darkBackgroundFileName: String? = nil,
+        darkFloatingFileName: String? = nil,
+        darkForegroundFileName: String? = nil
     ) throws {
         do {
             try Data(String(identifier).utf8).write(
@@ -523,19 +681,33 @@ enum DescriptorBuilder {
             // 用户起的名字存在我们自己的"我的壁纸"记录里。
             // 构建 #24：logicalScreenClass 改 iPhone 类（390w-844h@3x~iphone，
             // 见 Camlo 对照），并加 foregroundAnimationFileName（3 个包）。
+            // 构建 #25：有 Dark 变体时 lockAndHome 加 "dark" 入口（深色模式用）。
+            var lockAndHome: [String: Any] = [
+                "default": [
+                    "backgroundAnimationFileName": backgroundFileName,
+                    "floatingAnimationFileNameKey": floatingFileName,
+                    "foregroundAnimationFileName": foregroundFileName,
+                    "identifier": 9183,
+                    "name": "Chip",
+                    "type": "LayeredAnimation"
+                ]
+            ]
+            if let darkBackgroundFileName = darkBackgroundFileName,
+               let darkFloatingFileName = darkFloatingFileName,
+               let darkForegroundFileName = darkForegroundFileName {
+                lockAndHome["dark"] = [
+                    "backgroundAnimationFileName": darkBackgroundFileName,
+                    "floatingAnimationFileNameKey": darkFloatingFileName,
+                    "foregroundAnimationFileName": darkForegroundFileName,
+                    "identifier": 9183,
+                    "name": "Chip",
+                    "type": "LayeredAnimation"
+                ]
+            }
             let wallpaper: [String: Any] = [
                 "appearanceAware": true,
                 "assets": [
-                    "lockAndHome": [
-                        "default": [
-                            "backgroundAnimationFileName": backgroundFileName,
-                            "floatingAnimationFileNameKey": floatingFileName,
-                            "foregroundAnimationFileName": foregroundFileName,
-                            "identifier": 9183,
-                            "name": "Chip",
-                            "type": "LayeredAnimation"
-                        ]
-                    ]
+                    "lockAndHome": lockAndHome
                 ],
                 "contentVersion": 2.01,
                 "family": "Chip",
@@ -693,37 +865,59 @@ enum DescriptorBuilder {
         """
     }
 
-    /// 2 态滑动解锁变身的 CAML（构建 #24，Camlo 式“真变身”）。
+    /// 2 态变身的 CAML（构建 #24，Camlo 式“真变身”；构建 #25 加动画曲线）。
     /// Chip 里叠两层：CALayer1 是照片 A（lock.jpg），CALayer2 是照片 B
-    /// （unlock.jpg）。crossfade 时 CALayer2 靠不透明度 0→1 淡入；
-    /// slide 时两层左右平移（A 滑出左边，B 从右边滑入）。
+    /// （unlock.jpg）。曲线决定 CALayer2 的动画属性：
+    /// 上滑揭幕 position.y、破屏觉醒 transform.scale + opacity、圣光瞬变 opacity。
     /// LKState 只写 Locked / Unlock / Sleep 三态（和原来一样），
-    /// 但每态里用 LKStateSetValue 把 CALayer2 的 opacity / position.x
-    /// 定下来；Locked→Unlock 与 Unlock→Locked 两组切换里放过渡动画，
+    /// 但每态里用 LKStateSetValue 把每个动画属性定下来；
+    /// Locked→Unlock 与 Unlock→Locked 两组切换里放过渡动画，
     /// 其余切换留空（和原来一样）。targetId 用图层的 id。
+    /// lockSrc / unlockSrc 是两张图在 assets 里的路径（白天 lock/unlock，
+    /// 夜间 night_lock/night_unlock）。
     /// 注意：这里的 LKStateSetValue / LKStateTransitionElement 写法
     /// 照 Camlo 二进制里的模板片段（见 ~/workspace/camlo-research/CAMLO_ANALYSIS.md），
     /// 不是 Placard 的空 <elements/>。
-    private static func twoStateCAML(width: Int, height: Int, slide: Bool) -> String {
+    private static func twoStateCAML(
+        width: Int,
+        height: Int,
+        curve: MorphCurve = .revealUp,
+        lockSrc: String = "assets/lock.jpg",
+        unlockSrc: String = "assets/unlock.jpg"
+    ) -> String {
         let cx = width / 2
         let cy = height / 2
-        // crossfade：CALayer2 初始不透明度 0（只显示 A）；slide：CALayer2 初始在右侧屏外。
-        let layer2Opacity = slide ? "1" : "0"
-        let layer2X = slide ? cx + width : cx
-        // Locked 态：CALayer2 的目标值（crossfade: opacity 0；slide: x 在右侧屏外）。
-        let lockedValue = slide ? "\(cx + width)" : "0"
-        let lockedKeyPath = slide ? "position.x" : "opacity"
-        // Unlock 态：CALayer2 的目标值（crossfade: opacity 1；slide: x 回到中心）。
-        let unlockValue = slide ? "\(cx)" : "1"
-        let unlockKeyPath = lockedKeyPath
-        // 过渡动画：Locked→Unlock（CALayer2 从 Locked 值变到 Unlock 值），
-        // Unlock→Locked 反向。CABasicAnimation，0.6 秒，easeInEaseOut。
-        let forwardAnim = """
-                      <animation type="CABasicAnimation" keyPath="\(lockedKeyPath)" fromValue="\(lockedValue)" toValue="\(unlockValue)" duration="0.6" timingFunction="easeInEaseOut"/>
-        """
-        let backwardAnim = """
-                      <animation type="CABasicAnimation" keyPath="\(lockedKeyPath)" fromValue="\(unlockValue)" toValue="\(lockedValue)" duration="0.6" timingFunction="easeInEaseOut"/>
-        """
+        let props = curve.animatedProperties(width: width, height: height)
+        let initial = curve.initialLayerState(width: width, height: height)
+        let duration = curve.duration
+        let timing = curve.timingFunction
+
+        // 三态：Locked / Sleep 用 Locked 值，Unlock 用 Unlock 值。
+        func stateElements(value: (String, String, String) -> String) -> String {
+            props.map { prop in
+                """
+                                  <LKStateSetValue targetId="CALayer2" keyPath="\(prop.keyPath)">
+                                    <value type="real" value="\(value(prop.keyPath, prop.locked, prop.unlocked))"/>
+                                  </LKStateSetValue>
+                """
+            }.joined(separator: "\n")
+        }
+        let lockedElements = stateElements { _, locked, _ in locked }
+        let unlockElements = stateElements { _, _, unlocked in unlocked }
+
+        // 两组过渡动画：每组里每个属性一条 CABasicAnimation。
+        func transitionAnimations(from: (String, String, String) -> String, to: (String, String, String) -> String) -> String {
+            props.map { prop in
+                """
+                                  <animation type="CABasicAnimation" keyPath="\(prop.keyPath)" fromValue="\(from(prop.keyPath, prop.locked, prop.unlocked))" toValue="\(to(prop.keyPath, prop.locked, prop.unlocked))" duration="\(duration)" timingFunction="\(timing)"/>
+                """
+            }.joined(separator: "\n")
+        }
+        let forwardAnims = transitionAnimations(from: { _, locked, _ in locked }, to: { _, _, unlocked in unlocked })
+        let backwardAnims = transitionAnimations(from: { _, _, unlocked in unlocked }, to: { _, locked, _ in locked })
+
+        // CALayer2 的初始属性：position / opacity，破屏觉醒再加 transform（缩 0.6 倍）。
+        let transformAttr = initial.transform.map { " transform=\"\($0)\"" } ?? ""
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <caml xmlns="http://www.apple.com/CoreAnimation/1.0">
@@ -732,10 +926,10 @@ enum DescriptorBuilder {
               <CATransformLayer allowsEdgeAntialiasing="1" allowsGroupOpacity="1" allowsHitTesting="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" name="Chip" position="\(cx) \(cy)">
                 <sublayers>
                   <CALayer id="CALayer1" allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" name="CALayer1" position="\(cx) \(cy)">
-                    <contents type="CGImage" src="assets/lock.jpg"/>
+                    <contents type="CGImage" src="\(lockSrc)"/>
                   </CALayer>
-                  <CALayer id="CALayer2" allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" name="CALayer2" opacity="\(layer2Opacity)" position="\(layer2X) \(cy)">
-                    <contents type="CGImage" src="assets/unlock.jpg"/>
+                  <CALayer id="CALayer2" allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" name="CALayer2" opacity="\(initial.opacity)" position="\(initial.position)"\(transformAttr)>
+                    <contents type="CGImage" src="\(unlockSrc)"/>
                   </CALayer>
                 </sublayers>
               </CATransformLayer>
@@ -743,23 +937,17 @@ enum DescriptorBuilder {
             <states>
               <LKState name="Locked">
                 <elements>
-                  <LKStateSetValue targetId="CALayer2" keyPath="\(lockedKeyPath)">
-                    <value type="real" value="\(lockedValue)"/>
-                  </LKStateSetValue>
+        \(lockedElements)
                 </elements>
               </LKState>
               <LKState name="Unlock">
                 <elements>
-                  <LKStateSetValue targetId="CALayer2" keyPath="\(unlockKeyPath)">
-                    <value type="real" value="\(unlockValue)"/>
-                  </LKStateSetValue>
+        \(unlockElements)
                 </elements>
               </LKState>
               <LKState name="Sleep">
                 <elements>
-                  <LKStateSetValue targetId="CALayer2" keyPath="\(lockedKeyPath)">
-                    <value type="real" value="\(lockedValue)"/>
-                  </LKStateSetValue>
+        \(lockedElements)
                 </elements>
               </LKState>
             </states>
@@ -767,14 +955,14 @@ enum DescriptorBuilder {
               <LKStateTransition fromState="Locked" toState="Unlock">
                 <elements>
                   <LKStateTransitionElement targetId="CALayer2">
-        \(forwardAnim)
+        \(forwardAnims)
                   </LKStateTransitionElement>
                 </elements>
               </LKStateTransition>
               <LKStateTransition fromState="Unlock" toState="Locked">
                 <elements>
                   <LKStateTransitionElement targetId="CALayer2">
-        \(backwardAnim)
+        \(backwardAnims)
                   </LKStateTransitionElement>
                 </elements>
               </LKStateTransition>
@@ -785,6 +973,34 @@ enum DescriptorBuilder {
               <LKStateTransition fromState="*" toState="Sleep"><elements/></LKStateTransition>
               <LKStateTransition fromState="Sleep" toState="*"><elements/></LKStateTransition>
             </stateTransitions>
+          </CALayer>
+        </caml>
+        """
+    }
+
+    /// 前景抠图层的 CAML（构建 #25，AI 主体抠图）。
+    /// Floating.ca 里放一个全幅图层显示 assets/foreground.png（带透明通道），
+    /// 盖在锁屏时钟前面（Floating 层在时钟前面，见 Camlo 对照）。
+    /// 用和 Background 一样的 1080×1920 画布（不是 blankCAML 的 3176），
+    /// 保证抠图和 lock.jpg 像素对齐；调用方同时用 indexXML 写 index.xml。
+    private static func floatingCAML(width: Int, height: Int) -> String {
+        let cx = width / 2
+        let cy = height / 2
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <caml xmlns="http://www.apple.com/CoreAnimation/1.0">
+          <CALayer allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" hidden="0" name="_FLOATING" position="\(cx) \(cy)">
+            <sublayers>
+              <CATransformLayer allowsEdgeAntialiasing="1" allowsGroupOpacity="1" allowsHitTesting="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" name="Chip" position="\(cx) \(cy)">
+                <sublayers>
+                  <CALayer id="ForegroundCutout" allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" name="ForegroundCutout" position="\(cx) \(cy)">
+                    <contents type="CGImage" src="assets/foreground.png"/>
+                  </CALayer>
+                </sublayers>
+              </CATransformLayer>
+            </sublayers>
+            <states><LKState name="Locked"><elements/></LKState><LKState name="Unlock"><elements/></LKState><LKState name="Sleep"><elements/></LKState></states>
+            <stateTransitions><LKStateTransition fromState="*" toState="Unlock"><elements/></LKStateTransition><LKStateTransition fromState="Unlock" toState="*"><elements/></LKStateTransition><LKStateTransition fromState="*" toState="Locked"><elements/></LKStateTransition><LKStateTransition fromState="Locked" toState="*"><elements/></LKStateTransition><LKStateTransition fromState="*" toState="Sleep"><elements/></LKStateTransition><LKStateTransition fromState="Sleep" toState="*"><elements/></LKStateTransition></stateTransitions>
           </CALayer>
         </caml>
         """

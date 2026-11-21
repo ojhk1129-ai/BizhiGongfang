@@ -193,18 +193,25 @@ enum InjectFlow {
     /// 变身：一键写入锁屏，走 2 态滑动解锁描述符（构建 #24，Camlo 式“真变身”）。
     /// 不再是 45 帧视频：只把照片 A（lock）和照片 B（unlock）各渲染一张
     /// 1080×1920，写进 2 态描述符（Locked 显示 A，Unlock 显示 B）。
+    /// 只有滑动一种模式（交叉淡化已删）。
     /// videoURL 是调用方先渲染好的 3 秒 MOV（供“我的壁纸”记录和详情页
     /// 播放动态用）；still / stillJPEGData 是静态图。
+    /// 构建 #25：curve / foregroundPNG / 夜图 / 常显图由调用方算好传进来，
+    /// 直接透传给 buildTwoStateMorphDescriptor。
     static func injectTwoStateMorph(
         imageA: UIImage,
         imageB: UIImage,
-        slide: Bool,
         videoURL: URL,
         name: String,
         kind: WallpaperItem.Kind,
         still: UIImage,
         stillJPEGData: Data,
-        store: WallpaperStore
+        store: WallpaperStore,
+        curve: DescriptorBuilder.MorphCurve = .revealUp,
+        foregroundPNG: Data? = nil,
+        nightLockJPEG: Data? = nil,
+        nightUnlockJPEG: Data? = nil,
+        alwaysOnJPEG: Data? = nil
     ) async throws -> String {
         guard PosterBoardStore.isAvailable else {
             throw InjectError.missingAppGroup
@@ -224,7 +231,11 @@ enum InjectFlow {
             lockJPEG: lockJPEG,
             unlockJPEG: unlockJPEG,
             size: outputSize,
-            slide: slide,
+            curve: curve,
+            foregroundPNG: foregroundPNG,
+            nightLockJPEG: nightLockJPEG,
+            nightUnlockJPEG: nightUnlockJPEG,
+            alwaysOnJPEG: alwaysOnJPEG,
             in: workspace
         )
         let appHash = try PosterBoardStore.findPosterBoardHash()

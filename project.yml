@@ -24,5 +24,4 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone:
           - UIInterfaceOrientationPortrait
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "需要访问相册，选择照片和视频制作壁纸"
-        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "需要把制作好的 Live Photo 壁纸保存到相册"
         INFOPLIST_KEY_NSMotionUsageDescription: "需要使用陀螺仪，在制作景深壁纸时实时预览视差效果"

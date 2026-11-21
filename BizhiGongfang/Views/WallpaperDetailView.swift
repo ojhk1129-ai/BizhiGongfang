@@ -1,7 +1,7 @@
 import AVKit
 import SwiftUI
 
-/// 壁纸详情：预览静态图、播放动态、重新保存到相册、分享、删除。
+/// 壁纸详情：预览静态图、播放动态、导出 .tendies、删除。
 struct WallpaperDetailView: View {
     @EnvironmentObject private var store: WallpaperStore
     @Environment(\.dismiss) private var dismiss
@@ -10,8 +10,6 @@ struct WallpaperDetailView: View {
 
     @State private var player: AVPlayer?
     @State private var isPlayingVideo = false
-    @State private var showShare = false
-    @State private var isSaving = false
     @State private var isExportingTendies = false
     @State private var tendiesURL: URL?
     @State private var showTendiesShare = false
@@ -19,6 +17,12 @@ struct WallpaperDetailView: View {
     @State private var injectedRemoved = false
     @State private var alertMessage: String?
     @State private var showAlert = false
+
+    /// 这条记录有没有存 video.mov（有才显示“播放动态”，视频/景深记录
+    /// 导出 .tendies 时也要用它）。
+    private var hasVideo: Bool {
+        FileManager.default.fileExists(atPath: store.videoURL(for: item).path)
+    }
 
     var body: some View {
         NavigationStack {
@@ -37,37 +41,22 @@ struct WallpaperDetailView: View {
                             .cornerRadius(12)
                     }
 
-                    Button(isPlayingVideo ? "查看静态图" : "播放动态") {
-                        if isPlayingVideo {
-                            player?.pause()
-                            isPlayingVideo = false
-                        } else {
-                            let newPlayer = AVPlayer(url: store.videoURL(for: item))
-                            player = newPlayer
-                            isPlayingVideo = true
-                            newPlayer.play()
-                        }
-                    }
-                    .buttonStyle(.bordered)
-
-                    VStack(spacing: 10) {
-                        Button {
-                            saveToPhotos()
-                        } label: {
-                            Label("保存到相册", systemImage: "square.and.arrow.down")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(isSaving)
-
-                        Button {
-                            showShare = true
-                        } label: {
-                            Label("分享", systemImage: "square.and.arrow.up")
-                                .frame(maxWidth: .infinity)
+                    if hasVideo {
+                        Button(isPlayingVideo ? "查看静态图" : "播放动态") {
+                            if isPlayingVideo {
+                                player?.pause()
+                                isPlayingVideo = false
+                            } else {
+                                let newPlayer = AVPlayer(url: store.videoURL(for: item))
+                                player = newPlayer
+                                isPlayingVideo = true
+                                newPlayer.play()
+                            }
                         }
                         .buttonStyle(.bordered)
+                    }
 
+                    VStack(spacing: 10) {
                         Button {
                             exportTendies()
                         } label: {
@@ -80,7 +69,7 @@ struct WallpaperDetailView: View {
                             }
                         }
                         .buttonStyle(.bordered)
-                        .disabled(isExportingTendies || isSaving)
+                        .disabled(isExportingTendies)
 
                         Text(item.kind == .morph
                              ? "变身记录只存了静态图，导出的是静态版 .tendies；要变身效果请回变身页重新做。导出后用 Camlo「导入外部 .tendies 壁纸包」安装。"
@@ -90,7 +79,7 @@ struct WallpaperDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
 
                         // 只删锁屏画廊里的这一张（按记录的描述符 UUID 精确删），
-                        // 本地这张壁纸和相册里的 Live Photo 都不动。
+                        // 本地这张壁纸不动。
                         if item.injectedPosterUUID != nil && !injectedRemoved {
                             Button(role: .destructive) {
                                 deleteInjectedWallpaper()
@@ -117,11 +106,6 @@ struct WallpaperDetailView: View {
                         .buttonStyle(.bordered)
                     }
                     .padding(.horizontal)
-
-                    Text("设为锁屏壁纸：去「照片」打开这张 Live Photo → 点分享 → 「设为墙纸」→ 打开 Live Photo。")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal)
                 }
                 .padding(.vertical)
             }
@@ -131,9 +115,6 @@ struct WallpaperDetailView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { dismiss() }
                 }
-            }
-            .sheet(isPresented: $showShare) {
-                ShareSheet(items: [store.stillURL(for: item), store.videoURL(for: item)])
             }
             .sheet(isPresented: $showTendiesShare) {
                 if let tendiesURL = tendiesURL {
@@ -147,26 +128,6 @@ struct WallpaperDetailView: View {
             }
             .onDisappear {
                 player?.pause()
-            }
-        }
-    }
-
-    private func saveToPhotos() {
-        guard let jpegData = try? Data(contentsOf: store.stillURL(for: item)) else {
-            alertMessage = "找不到静态图文件"
-            showAlert = true
-            return
-        }
-        isSaving = true
-        LivePhotoExporter.save(stillJPEGData: jpegData, videoURL: store.videoURL(for: item)) { success, error in
-            DispatchQueue.main.async {
-                isSaving = false
-                if success {
-                    alertMessage = LivePhotoExporter.successMessage
-                } else {
-                    alertMessage = "保存失败：\(error?.localizedDescription ?? "未知错误")"
-                }
-                showAlert = true
             }
         }
     }
@@ -208,7 +169,7 @@ struct WallpaperDetailView: View {
         }
     }
 
-    /// 只删锁屏画廊里的这一张，不删本地记录和相册。
+    /// 只删锁屏画廊里的这一张，不删本地记录。
     private func deleteInjectedWallpaper() {
         guard let posterUUID = item.injectedPosterUUID,
               let provider = item.injectedProvider,

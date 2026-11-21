@@ -10,7 +10,6 @@ struct VideoEditorView: View {
     @State private var videoDuration: Double?
     @State private var player: AVPlayer?
     @State private var showPicker = false
-    @State private var isExporting = false
     @State private var isInjecting = false
     @State private var isExportingTendies = false
     @State private var tendiesURL: URL?
@@ -110,23 +109,7 @@ struct VideoEditorView: View {
 
     private var exportSection: some View {
         VStack(spacing: 8) {
-            Button {
-                exportLivePhoto()
-            } label: {
-                if isExporting {
-                    ProgressView()
-                        .frame(maxWidth: .infinity)
-                } else {
-                    Text("导出 Live Photo 到相册")
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(videoURL == nil || isExporting || isExportingTendies)
-            Text("竖屏视频效果最好。")
-                .font(.footnote)
-                .foregroundColor(.secondary)
-            InjectButton(ready: videoURL != nil && !isExporting && !isExportingTendies, busy: isInjecting) {
+            InjectButton(ready: videoURL != nil && !isExportingTendies, busy: isInjecting) {
                 injectToLockScreen()
             }
             Button {
@@ -141,7 +124,7 @@ struct VideoEditorView: View {
                 }
             }
             .buttonStyle(.bordered)
-            .disabled(videoURL == nil || isExportingTendies || isExporting || isInjecting)
+            .disabled(videoURL == nil || isExportingTendies || isInjecting)
             Text("导出视频 .tendies，用 Camlo「导入外部 .tendies 壁纸包」安装；不依赖直写，iOS 版本太老或直写被封时也能导出。")
                 .font(.footnote)
                 .foregroundColor(.secondary)
@@ -155,62 +138,6 @@ struct VideoEditorView: View {
                 let seconds = CMTimeGetSeconds(duration)
                 await MainActor.run {
                     videoDuration = seconds.isFinite ? seconds : nil
-                }
-            }
-        }
-    }
-
-    private func exportLivePhoto() {
-        guard let videoURL = videoURL, !isExporting else { return }
-        isExporting = true
-        let identifier = LivePhotoMetadata.newIdentifier()
-        VideoCropper.cropToLivePhoto(sourceURL: videoURL, identifier: identifier) { result in
-            switch result {
-            case .failure(let error):
-                DispatchQueue.main.async {
-                    self.isExporting = false
-                    self.alertMessage = "导出失败：\(error.localizedDescription)"
-                    self.showAlert = true
-                }
-            case .success(let cropped):
-                Task {
-                    do {
-                        let still = try await VideoCropper.stillImage(from: cropped.videoURL, at: cropped.stillImageTime)
-                        guard let jpegData = LivePhotoMetadata.jpegData(for: still, identifier: identifier) else {
-                            DispatchQueue.main.async {
-                                self.isExporting = false
-                                self.alertMessage = "导出失败：静态图生成失败"
-                                self.showAlert = true
-                            }
-                            return
-                        }
-                        LivePhotoExporter.save(stillJPEGData: jpegData, videoURL: cropped.videoURL) { success, error in
-                            DispatchQueue.main.async {
-                                self.isExporting = false
-                                if success {
-                                    let thumbnail = WallpaperStore.makeThumbnail(from: still)
-                                    _ = self.store.add(
-                                        name: WallpaperStore.defaultName(for: .video),
-                                        kind: .video,
-                                        stillImageTime: cropped.stillImageTime,
-                                        stillJPEGData: jpegData,
-                                        videoURL: cropped.videoURL,
-                                        thumbnail: thumbnail
-                                    )
-                                    self.alertMessage = LivePhotoExporter.successMessage
-                                } else {
-                                    self.alertMessage = "保存失败：\(error?.localizedDescription ?? "未知错误")"
-                                }
-                                self.showAlert = true
-                            }
-                        }
-                    } catch {
-                        DispatchQueue.main.async {
-                            self.isExporting = false
-                            self.alertMessage = "导出失败：\(error.localizedDescription)"
-                            self.showAlert = true
-                        }
-                    }
                 }
             }
         }
@@ -257,7 +184,7 @@ struct VideoEditorView: View {
 
     /// 一键写入锁屏：先裁剪到 3 秒，再抽帧做描述符、写进 PosterBoard。
     private func injectToLockScreen() {
-        guard let videoURL = videoURL, !isInjecting, !isExporting else { return }
+        guard let videoURL = videoURL, !isInjecting else { return }
         isInjecting = true
         let identifier = LivePhotoMetadata.newIdentifier()
         VideoCropper.cropToLivePhoto(sourceURL: videoURL, identifier: identifier) { result in

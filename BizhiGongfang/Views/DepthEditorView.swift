@@ -32,7 +32,6 @@ struct DepthEditorView: View {
     @State private var image: UIImage?
     @State private var motionEnabled = true
     @State private var showPicker = false
-    @State private var isExporting = false
     @State private var isInjecting = false
     @State private var isExportingTendies = false
     @State private var tendiesURL: URL?
@@ -159,23 +158,7 @@ struct DepthEditorView: View {
 
     private var exportSection: some View {
         VStack(spacing: 8) {
-            Button {
-                exportLivePhoto()
-            } label: {
-                if isExporting {
-                    ProgressView()
-                        .frame(maxWidth: .infinity)
-                } else {
-                    Text("导出 Live Photo 到相册")
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(image == nil || isExporting || isExportingTendies)
-            Text("导出 3 秒视频：图片左右平移再回正；静态图用中间帧。")
-                .font(.footnote)
-                .foregroundColor(.secondary)
-            InjectButton(ready: image != nil && !isExporting && !isExportingTendies, busy: isInjecting) {
+            InjectButton(ready: image != nil && !isExportingTendies, busy: isInjecting) {
                 injectToLockScreen()
             }
             Button {
@@ -190,7 +173,7 @@ struct DepthEditorView: View {
                 }
             }
             .buttonStyle(.bordered)
-            .disabled(image == nil || isExportingTendies || isExporting || isInjecting)
+            .disabled(image == nil || isExportingTendies || isInjecting)
             Text("导出景深 .tendies，用 Camlo「导入外部 .tendies 壁纸包」安装；不依赖直写，iOS 版本太老或直写被封时也能导出。")
                 .font(.footnote)
                 .foregroundColor(.secondary)
@@ -209,54 +192,6 @@ struct DepthEditorView: View {
                 scale: 1.15,
                 offset: CGPoint(x: offsetX, y: 0)
             )
-        }
-    }
-
-    private func exportLivePhoto() {
-        guard let image = image, !isExporting else { return }
-        isExporting = true
-        let identifier = LivePhotoMetadata.newIdentifier()
-        let stillTime = VideoRenderer.duration / 2
-        let drawer = depthDrawer(image: image)
-        VideoRenderer.renderVideo(identifier: identifier, stillImageTime: stillTime, drawer: drawer) { result in
-            switch result {
-            case .failure(let error):
-                DispatchQueue.main.async {
-                    self.isExporting = false
-                    self.alertMessage = "导出失败：\(error.localizedDescription)"
-                    self.showAlert = true
-                }
-            case .success(let videoURL):
-                let still = VideoRenderer.renderStill(size: VideoRenderer.outputSize, at: stillTime, drawer: drawer)
-                guard let jpegData = LivePhotoMetadata.jpegData(for: still, identifier: identifier) else {
-                    DispatchQueue.main.async {
-                        self.isExporting = false
-                        self.alertMessage = "导出失败：静态图生成失败"
-                        self.showAlert = true
-                    }
-                    return
-                }
-                LivePhotoExporter.save(stillJPEGData: jpegData, videoURL: videoURL) { success, error in
-                    DispatchQueue.main.async {
-                        self.isExporting = false
-                        if success {
-                            let thumbnail = WallpaperStore.makeThumbnail(from: still)
-                            _ = self.store.add(
-                                name: WallpaperStore.defaultName(for: .depth),
-                                kind: .depth,
-                                stillImageTime: stillTime,
-                                stillJPEGData: jpegData,
-                                videoURL: videoURL,
-                                thumbnail: thumbnail
-                            )
-                            self.alertMessage = LivePhotoExporter.successMessage
-                        } else {
-                            self.alertMessage = "保存失败：\(error?.localizedDescription ?? "未知错误")"
-                        }
-                        self.showAlert = true
-                    }
-                }
-            }
         }
     }
 
@@ -294,7 +229,7 @@ struct DepthEditorView: View {
 
     /// 一键写入锁屏：先渲染 3 秒视频，再抽帧做描述符、写进 PosterBoard。
     private func injectToLockScreen() {
-        guard let image = image, !isInjecting, !isExporting else { return }
+        guard let image = image, !isInjecting else { return }
         isInjecting = true
         let identifier = LivePhotoMetadata.newIdentifier()
         let stillTime = VideoRenderer.duration / 2

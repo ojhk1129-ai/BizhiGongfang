@@ -11,6 +11,10 @@ struct ContentView: View {
                 .tabItem {
                     Label("制作", systemImage: "plus.circle")
                 }
+            VaultView()
+                .tabItem {
+                    Label("金库", systemImage: "archivebox")
+                }
         }
     }
 }
