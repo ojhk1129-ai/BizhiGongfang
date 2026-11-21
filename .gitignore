@@ -1,0 +1,25 @@
+# Xcode / macOS
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# xcodegen 生成的工程（可以随时重新生成）
+BizhiGongfang.xcodeproj/
+
+# 编辑器
+.vscode/
+*.swp
