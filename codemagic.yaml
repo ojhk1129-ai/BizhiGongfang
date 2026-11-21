@@ -1,0 +1,33 @@
+workflows:
+  ios-unsigned:
+    name: 壁纸工坊 iOS (unsigned)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+    scripts:
+      - name: Install xcodegen
+        script: brew install xcodegen
+      - name: Generate Xcode project
+        script: xcodegen generate
+      - name: Build iOS without code signing
+        script: |
+          xcodebuild -project BizhiGongfang.xcodeproj \
+            -scheme BizhiGongfang \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+      - name: Package unsigned IPA
+        script: |
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "BizhiGongfang.app" -type d | head -n 1)
+          echo "Found app at: $APP_PATH"
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          zip -r BizhiGongfang-unsigned.ipa Payload
+    artifacts:
+      - BizhiGongfang-unsigned.ipa
+      - /tmp/xcodebuild_logs/*.log

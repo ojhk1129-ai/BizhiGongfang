@@ -1,0 +1,80 @@
+// Ported from frs0n/placard (GPL-3.0).
+#import "ContainerEnumeration.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/fsgetpath.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/xattr.h>
+#include <time.h>
+#include <unistd.h>
+
+int placard_visit_containers(BOOL (^visitor)(NSString *path)) {
+    NSString *probe = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    int fd = open(probe.fileSystemRepresentation, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
+    if (fd < 0) return -1;
+    struct stat info;
+    struct statfs volume;
+    BOOL valid = fstat(fd, &info) == 0 && fstatfs(fd, &volume) == 0;
+    close(fd);
+    unlink(probe.fileSystemRepresentation);
+    if (!valid || info.st_ino > UINT64_MAX - 100000) return -1;
+    uint64_t upper = info.st_ino + 100000;
+    const char *roots[] = {
+        "/var/mobile/Containers/Data/Application/",
+        "/var/mobile/Containers/Data/InternalDaemon/",
+        "/var/mobile/Containers/Data/PluginKitPlugin/"
+    };
+    size_t lengths[3];
+    for (size_t i = 0; i < 3; i++) lengths[i] = strlen(roots[i]);
+    struct timespec start, now;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    char buffer[4096];
+    for (uint64_t inode = 1; inode <= upper; inode++) {
+        if ((inode & 4095) == 0) {
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (now.tv_sec - start.tv_sec >= 45) break;
+        }
+        if (fsgetpath(buffer, sizeof(buffer), &volume.f_fsid, inode) <= 0) continue;
+        const char *candidate = buffer;
+        if (strncmp(candidate, "/private/var/", 13) == 0) candidate += 8;
+        for (size_t i = 0; i < 3; i++) {
+            if (strncmp(candidate, roots[i], lengths[i]) != 0) continue;
+            const char *tail = candidate + lengths[i];
+            if (strlen(tail) != 36 || strchr(tail, '/')) break;
+            @autoreleasepool {
+                NSString *path = [NSString stringWithUTF8String:candidate];
+                if (path && visitor(path)) return 1;
+            }
+            break;
+        }
+    }
+    return 0;
+}
+
+NSString *placard_container_identifier(NSString *path) {
+    for (NSString *key in @[@"com.apple.containermanager.identity", @"com.apple.containermanager.identifier"]) {
+        ssize_t size = getxattr(path.fileSystemRepresentation, key.UTF8String, NULL, 0, 0, XATTR_NOFOLLOW);
+        if (size <= 0 || size > 65536) continue;
+        NSMutableData *data = [NSMutableData dataWithLength:(NSUInteger)size];
+        ssize_t count = getxattr(path.fileSystemRepresentation, key.UTF8String, data.mutableBytes, data.length, 0, XATTR_NOFOLLOW);
+        if (count <= 0) continue;
+        data.length = (NSUInteger)count;
+        NSString *value = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        NSMutableCharacterSet *ignored = [NSCharacterSet.whitespaceAndNewlineCharacterSet mutableCopy];
+        [ignored addCharactersInString:[NSString stringWithFormat:@"%C", (unichar)0]];
+        for (NSString *line in [value componentsSeparatedByString:@"\n"]) {
+            NSString *text = [line stringByTrimmingCharactersInSet:ignored];
+            if ([text hasPrefix:@"identifier:"]) {
+                NSString *identifier = [[text substringFromIndex:11] stringByTrimmingCharactersInSet:ignored];
+                if (identifier.length) return identifier;
+            }
+        }
+        NSString *flat = [value stringByTrimmingCharactersInSet:ignored];
+        if (flat.length && ![flat containsString:@":"] && ![flat containsString:@"\n"]) return flat;
+    }
+    return nil;
+}
