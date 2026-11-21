@@ -70,7 +70,7 @@ enum InjectSupport {
 
     /// 成功写入后的引导：先讲注销桌面（画廊要重建索引才会出现新壁纸），
     /// 再讲长按锁屏点 +、滑到底部「收藏」里找。
-    /// 三个编辑器注入成功后弹出的注销提示、诊断页「写入成功后怎么查看」用的都是这段。
+    /// 视频编辑器注入成功后弹出的注销提示、诊断页「写入成功后怎么查看」用的都是这段。
     static let successGuidance = """
     已写入锁屏画廊！
 
@@ -112,139 +112,6 @@ enum InjectFlow {
         defer { try? FileManager.default.removeItem(at: workspace) }
 
         let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace, effects: effects)
-        let appHash = try PosterBoardStore.findPosterBoardHash()
-        let written = try PosterBoardStore.writeDescriptors(
-            appHash: appHash,
-            provider: DescriptorBuilder.providerID,
-            descriptorFolders: [descriptor]
-        )
-        guard let writtenPath = written.first else {
-            throw InjectError.wallpaperNotFound
-        }
-        let posterUUID = URL(fileURLWithPath: writtenPath).lastPathComponent
-        let thumbnail = WallpaperStore.makeThumbnail(from: still)
-        let item = store.add(
-            name: name,
-            kind: kind,
-            stillImageTime: 0,
-            stillJPEGData: stillJPEGData,
-            videoURL: videoURL,
-            thumbnail: thumbnail
-        )
-        store.markInjected(id: item.id, posterUUID: posterUUID, provider: DescriptorBuilder.providerID)
-        return posterUUID
-    }
-
-    /// 变身 / 景深：一键写入锁屏，不经过 MOV，直接按 drawer 一帧一帧画出来
-    /// 做描述符（构建 #23：走静态写入那条渲染路，画廊能认；MOV → 抽帧那条路
-    /// 写出来的多帧描述符在 13p 画廊里不显示）。
-    /// videoURL 是调用方先渲染好的 3 秒 MOV（供“我的壁纸”记录和详情页
-    /// 播放动态用）；still / stillJPEGData 是静态图。
-    static func injectFromDrawer(
-        drawer: @escaping VideoRenderer.FrameDrawer,
-        duration: TimeInterval,
-        stillImageTime: TimeInterval,
-        videoURL: URL,
-        name: String,
-        kind: WallpaperItem.Kind,
-        still: UIImage,
-        stillJPEGData: Data,
-        store: WallpaperStore,
-        effects: WallpaperEffects = .init()
-    ) async throws -> String {
-        guard PosterBoardStore.isAvailable else {
-            throw InjectError.missingAppGroup
-        }
-        let workspace = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BizhiGongfang-Inject-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: workspace) }
-
-        let outputSize = CGSize(width: 1080, height: 1920)
-        let frameCount = Int(duration * DescriptorBuilder.outputFrameRate)
-        let descriptor = try DescriptorBuilder.buildDescriptorFromDrawer(
-            frameCount: frameCount,
-            duration: duration,
-            outputSize: outputSize,
-            drawer: drawer,
-            in: workspace,
-            effects: effects
-        )
-        let appHash = try PosterBoardStore.findPosterBoardHash()
-        let written = try PosterBoardStore.writeDescriptors(
-            appHash: appHash,
-            provider: DescriptorBuilder.providerID,
-            descriptorFolders: [descriptor]
-        )
-        guard let writtenPath = written.first else {
-            throw InjectError.wallpaperNotFound
-        }
-        let posterUUID = URL(fileURLWithPath: writtenPath).lastPathComponent
-        let thumbnail = WallpaperStore.makeThumbnail(from: still)
-        let item = store.add(
-            name: name,
-            kind: kind,
-            stillImageTime: stillImageTime,
-            stillJPEGData: stillJPEGData,
-            videoURL: videoURL,
-            thumbnail: thumbnail
-        )
-        store.markInjected(id: item.id, posterUUID: posterUUID, provider: DescriptorBuilder.providerID)
-        return posterUUID
-    }
-
-    /// 变身：一键写入锁屏，走 2 态滑动解锁描述符（构建 #24，Camlo 式“真变身”）。
-    /// 不再是 45 帧视频：只把照片 A（lock）和照片 B（unlock）各渲染一张
-    /// 1080×1920，写进 2 态描述符（Locked 显示 A，Unlock 显示 B）。
-    /// 只有滑动一种模式（交叉淡化已删）。
-    /// videoURL 是调用方先渲染好的 3 秒 MOV（供“我的壁纸”记录和详情页
-    /// 播放动态用）；still / stillJPEGData 是静态图。
-    /// 构建 #25：curve / foregroundPNG / 夜图 / 常显图由调用方算好传进来，
-    /// 直接透传给 buildTwoStateMorphDescriptor。
-    static func injectTwoStateMorph(
-        imageA: UIImage,
-        imageB: UIImage,
-        videoURL: URL,
-        name: String,
-        kind: WallpaperItem.Kind,
-        still: UIImage,
-        stillJPEGData: Data,
-        store: WallpaperStore,
-        curve: DescriptorBuilder.MorphCurve = .revealUp,
-        foregroundPNG: Data? = nil,
-        nightLockJPEG: Data? = nil,
-        nightUnlockJPEG: Data? = nil,
-        alwaysOnJPEG: Data? = nil,
-        effects: WallpaperEffects = .init()
-    ) async throws -> String {
-        guard PosterBoardStore.isAvailable else {
-            throw InjectError.missingAppGroup
-        }
-        let workspace = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BizhiGongfang-Inject-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: workspace) }
-
-        let outputSize = CGSize(width: 1080, height: 1920)
-        // 构建 #27：滤镜在这里套（renderTwoStateJPEGs 里给 A/B 各套一次），
-        // 调用方传进来的 imageA/imageB 是原图，预览/MOV 另外套（不重复套）。
-        guard let (lockJPEG, unlockJPEG) = DescriptorBuilder.renderTwoStateJPEGs(
-            imageA: imageA, imageB: imageB, size: outputSize, filter: effects.filter
-        ) else {
-            throw DescriptorBuilder.BuildError.frameEncodingFailed
-        }
-        let descriptor = try DescriptorBuilder.buildTwoStateMorphDescriptor(
-            lockJPEG: lockJPEG,
-            unlockJPEG: unlockJPEG,
-            size: outputSize,
-            curve: curve,
-            foregroundPNG: foregroundPNG,
-            nightLockJPEG: nightLockJPEG,
-            nightUnlockJPEG: nightUnlockJPEG,
-            alwaysOnJPEG: alwaysOnJPEG,
-            effects: effects,
-            in: workspace
-        )
         let appHash = try PosterBoardStore.findPosterBoardHash()
         let written = try PosterBoardStore.writeDescriptors(
             appHash: appHash,
