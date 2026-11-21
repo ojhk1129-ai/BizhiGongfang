@@ -80,48 +80,7 @@ enum TendiesExporter {
         return tendiesURL
     }
 
-    /// 变身：两张照片 → 2 态滑动解锁描述符 → .tendies。
-    /// 和一键写入（injectTwoStateMorph）是同一个描述符，只是最后一步
-    /// 改成打包分享，不写进 PosterBoard。
-    /// 只有滑动一种模式（交叉淡化已删）。
-    /// 构建 #25：curve / foregroundPNG / 夜图 / 常显图由调用方算好传进来，
-    /// 直接透传给 buildTwoStateMorphDescriptor。
-    static func exportTwoStateMorph(
-        imageA: UIImage,
-        imageB: UIImage,
-        name: String,
-        curve: DescriptorBuilder.MorphCurve = .revealUp,
-        foregroundPNG: Data? = nil,
-        nightLockJPEG: Data? = nil,
-        nightUnlockJPEG: Data? = nil,
-        alwaysOnJPEG: Data? = nil,
-        effects: WallpaperEffects = .init()
-    ) throws -> URL {
-        let workspace = try makeWorkspace()
-        defer { try? FileManager.default.removeItem(at: workspace) }
-        // 构建 #27：滤镜在这里套（renderTwoStateJPEGs 里给 A/B 各套一次）。
-        guard let (lockJPEG, unlockJPEG) = DescriptorBuilder.renderTwoStateJPEGs(
-            imageA: imageA, imageB: imageB, size: frameSize, filter: effects.filter
-        ) else {
-            throw ExportError.frameEncodingFailed
-        }
-        let descriptor = try DescriptorBuilder.buildTwoStateMorphDescriptor(
-            lockJPEG: lockJPEG,
-            unlockJPEG: unlockJPEG,
-            size: frameSize,
-            curve: curve,
-            foregroundPNG: foregroundPNG,
-            nightLockJPEG: nightLockJPEG,
-            nightUnlockJPEG: nightUnlockJPEG,
-            alwaysOnJPEG: alwaysOnJPEG,
-            effects: effects,
-            in: workspace
-        )
-        return try exportDescriptor(descriptor, name: name)
-    }
-
     /// 单张照片：静态 .tendies（1080×1920 单帧描述符）。
-    /// 变身记录没有原图 B 时也用这条路降级导出（静态版）。
     static func exportSinglePhoto(image: UIImage, name: String) throws -> URL {
         let workspace = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: workspace) }
@@ -131,30 +90,7 @@ enum TendiesExporter {
         return try exportDescriptor(descriptor, name: name)
     }
 
-    /// 景深：按 drawer 一帧一帧画出来的描述符 → .tendies，
-    /// 和一键写入（injectFromDrawer）同一套 drawer、帧数、尺寸。
-    static func exportFromDrawer(
-        frameCount: Int,
-        duration: TimeInterval,
-        outputSize: CGSize,
-        drawer: @escaping VideoRenderer.FrameDrawer,
-        name: String,
-        effects: WallpaperEffects = .init()
-    ) throws -> URL {
-        let workspace = try makeWorkspace()
-        defer { try? FileManager.default.removeItem(at: workspace) }
-        let descriptor = try DescriptorBuilder.buildDescriptorFromDrawer(
-            frameCount: frameCount,
-            duration: duration,
-            outputSize: outputSize,
-            drawer: drawer,
-            in: workspace,
-            effects: effects
-        )
-        return try exportDescriptor(descriptor, name: name)
-    }
-
-    /// 视频 MOV → 45 帧描述符 → .tendies（记录页的视频/景深记录用）。
+    /// 视频 MOV → 帧描述符 → .tendies（记录页的视频记录用）。
     static func exportVideo(videoURL: URL, name: String, effects: WallpaperEffects = .init()) async throws -> URL {
         let workspace = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: workspace) }
@@ -174,7 +110,7 @@ enum TendiesExporter {
     }
 
     /// 文件名清理：去掉 / \ : * ? " < > | 和控制字符，首尾去空白；
-    /// 清完是空的就用“壁纸”。默认名“变身壁纸 11-21 15:30”里的冒号会变“-”。
+    /// 清完是空的就用“壁纸”。默认名“视频壁纸 11-21 15:30”里的冒号会变“-”。
     private static func sanitizedFileName(_ name: String) -> String {
         let illegal = CharacterSet(charactersIn: "/\\:*?\"<>|").union(.controlCharacters)
         let cleaned = name.components(separatedBy: illegal).joined(separator: "-")
