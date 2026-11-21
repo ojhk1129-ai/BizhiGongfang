@@ -23,6 +23,7 @@ struct MorphEditorView: View {
     @State private var showPicker = false
     @State private var pickingSlot: Slot = .photoA
     @State private var curve: DescriptorBuilder.MorphCurve = .revealUp
+    @State private var effects = WallpaperEffects()
     @State private var cutoutEnabled = true
     @State private var nightEnabled = false
     @State private var imageNightA: UIImage?
@@ -53,6 +54,7 @@ struct MorphEditorView: View {
                     nightSection
                 }
                 alwaysOnSection
+                effectsSection
                 exportSection
             }
             .padding()
@@ -215,6 +217,33 @@ struct MorphEditorView: View {
         }
     }
 
+    /// 特效（构建 #27）：粒子 / 环境浮动 / 缓慢缩放 / 滤镜。
+    /// 滤镜实时显示在预览里；粒子、浮动、缩放是 CAML 动画，只在锁屏上出现。
+    private var effectsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("特效")
+                .font(.headline)
+            Picker("粒子", selection: $effects.particle) {
+                ForEach(ParticleStyle.allCases, id: \.self) { style in
+                    Text(style.displayName).tag(style)
+                }
+            }
+            .pickerStyle(.segmented)
+            Toggle("环境浮动", isOn: $effects.ambient)
+            Toggle("缓慢缩放", isOn: $effects.slowZoom)
+            Picker("滤镜", selection: $effects.filter) {
+                ForEach(WallpaperFilter.allCases, id: \.self) { filter in
+                    Text(filter.displayName).tag(filter)
+                }
+            }
+            .pickerStyle(.menu)
+            Text("粒子、浮动、缩放只在锁屏上出现，预览里看不到；滤镜实时显示在预览里。")
+                .font(.footnote)
+                .foregroundColor(.secondary)
+        }
+        .onChange(of: effects) { _, _ in refreshPreview() }
+    }
+
     private func photoButton(
         title: String,
         image: UIImage?,
@@ -304,7 +333,11 @@ struct MorphEditorView: View {
             previewImage = nil
             return
         }
-        let drawer = morphDrawer(imageA: imageA, imageB: imageB, curve: curve)
+        // 构建 #27：预览用滤镜后的图（inject/export 里再套一次会重复，
+        // 所以这里只给预览/MOV 的 drawer 套滤镜，inject/export 传原图）。
+        let filteredA = WallpaperEffects.apply(effects.filter, to: imageA)
+        let filteredB = WallpaperEffects.apply(effects.filter, to: imageB)
+        let drawer = morphDrawer(imageA: filteredA, imageB: filteredB, curve: curve)
         previewImage = VideoRenderer.renderStill(
             size: previewSize,
             at: progress * VideoRenderer.duration,
@@ -350,12 +383,18 @@ struct MorphEditorView: View {
         guard nightEnabled,
               let nightA = imageNightA,
               let nightB = imageNightB else { return nil }
-        return DescriptorBuilder.renderTwoStateJPEGs(imageA: nightA, imageB: nightB, size: size)
+        // 构建 #27：夜图也套同样的滤镜，和白天图保持一致。
+        return DescriptorBuilder.renderTwoStateJPEGs(
+            imageA: nightA, imageB: nightB, size: size, filter: effects.filter
+        )
     }
 
     private func alwaysOnJPEG(size: CGSize) -> Data? {
         guard let imageAlwaysOn = imageAlwaysOn else { return nil }
-        return DescriptorBuilder.renderSingleJPEG(image: imageAlwaysOn, size: size)
+        // 构建 #27：常显图也套同样的滤镜。
+        return DescriptorBuilder.renderSingleJPEG(
+            image: imageAlwaysOn, size: size, filter: effects.filter
+        )
     }
 
     private func cutoutPNG() async -> Data? {
@@ -371,7 +410,13 @@ struct MorphEditorView: View {
         guard let imageA = imageA, let imageB = imageB, !isInjecting else { return }
         isInjecting = true
         let identifier = LivePhotoMetadata.newIdentifier()
-        let drawer = morphDrawer(imageA: imageA, imageB: imageB, curve: curve)
+        // 构建 #27：MOV 用滤镜后的图（和描述符里的滤镜图一致）；
+        // injectTwoStateMorph 传原图，它内部再套一次滤镜（不重复套）。
+        let drawer = morphDrawer(
+            imageA: WallpaperEffects.apply(effects.filter, to: imageA),
+            imageB: WallpaperEffects.apply(effects.filter, to: imageB),
+            curve: curve
+        )
         VideoRenderer.renderVideo(identifier: identifier, stillImageTime: 0, drawer: drawer) { result in
             switch result {
             case .failure(let error):
@@ -397,6 +442,7 @@ struct MorphEditorView: View {
                         // 不再走 45 帧视频（画廊列不出多帧描述符）。
                         // MOV 仍渲染一份，供“我的壁纸”记录和详情页播放动态用。
                         // 构建 #25：曲线 / 抠图 / 夜图 / 常显图都算好一起传下去。
+                        // 构建 #27：特效也传下去（滤镜在 inject 内部套，传原图）。
                         let outputSize = VideoRenderer.outputSize
                         let night = self.nightJPEGs(size: outputSize)
                         let alwaysOn = self.alwaysOnJPEG(size: outputSize)
@@ -414,7 +460,8 @@ struct MorphEditorView: View {
                             foregroundPNG: foreground,
                             nightLockJPEG: night?.0,
                             nightUnlockJPEG: night?.1,
-                            alwaysOnJPEG: alwaysOn
+                            alwaysOnJPEG: alwaysOn,
+                            effects: self.effects
                         )
                         await MainActor.run {
                             self.isInjecting = false
@@ -453,7 +500,8 @@ struct MorphEditorView: View {
                     foregroundPNG: foreground,
                     nightLockJPEG: night?.0,
                     nightUnlockJPEG: night?.1,
-                    alwaysOnJPEG: alwaysOn
+                    alwaysOnJPEG: alwaysOn,
+                    effects: self.effects
                 )
                 await MainActor.run {
                     self.isExportingTendies = false
