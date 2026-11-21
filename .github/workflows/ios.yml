@@ -1,0 +1,59 @@
+name: Build iOS App
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Build (unsigned)
+        run: |
+          xcodebuild -project BizhiGongfang.xcodeproj \
+            -scheme BizhiGongfang \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "BizhiGongfang.app" -type d | head -n 1)
+          echo "Found app at: $APP_PATH"
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          zip -r BizhiGongfang-unsigned.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: BizhiGongfang-unsigned-ipa
+          path: BizhiGongfang-unsigned.ipa
+
+      - name: Publish unsigned IPA as release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "unsigned-${{ github.run_number }}" \
+            --title "未签名 IPA（构建 #${{ github.run_number }}）" \
+            --notes "自动构建的未签名 IPA，用 AltStore / SideStore 安装。" \
+            BizhiGongfang-unsigned.ipa
