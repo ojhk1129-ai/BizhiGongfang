@@ -100,8 +100,7 @@ enum InjectFlow {
         kind: WallpaperItem.Kind,
         still: UIImage,
         stillJPEGData: Data,
-        store: WallpaperStore,
-        effects: WallpaperEffects = .init()
+        store: WallpaperStore
     ) async throws -> String {
         guard PosterBoardStore.isAvailable else {
             throw InjectError.missingAppGroup
@@ -111,7 +110,7 @@ enum InjectFlow {
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: workspace) }
 
-        let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace, effects: effects)
+        let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace)
         let appHash = try PosterBoardStore.findPosterBoardHash()
         let written = try PosterBoardStore.writeDescriptors(
             appHash: appHash,
