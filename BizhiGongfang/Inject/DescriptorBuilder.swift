@@ -54,8 +54,7 @@ enum DescriptorBuilder {
     /// 输出尺寸强制设备原生竖屏（见 devicePortraitOutputSize），不跟源视频走。
     static func buildDescriptor(
         from videoURL: URL,
-        in workspace: URL,
-        effects: WallpaperEffects = .init()
+        in workspace: URL
     ) async throws -> URL {
         let asset = AVURLAsset(url: videoURL)
         let duration = try await asset.load(.duration)
@@ -97,7 +96,6 @@ enum DescriptorBuilder {
             preferredTransform: preferredTransform,
             outputSize: outputSize,
             outputFrameRate: outputFrameRate,
-            filter: effects.filter,
             to: assetsURL
         )
         guard !frameNames.isEmpty else { throw BuildError.invalidVideo }
@@ -114,12 +112,13 @@ enum DescriptorBuilder {
             frameNames: frameNames,
             duration: durationSeconds,
             autoReverses: false,
-            slowZoom: effects.slowZoom
         ).write(to: animationURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
         try indexXML(width: Int(outputSize.width), height: Int(outputSize.height))
             .write(to: animationURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
-        // 构建 #27：Floating 包由特效决定（全空时和原来一样写 blankCAML）。
-        try writeFloatingPackage(at: floatingURL, size: outputSize, effects: effects)
+        try blankCAML()
+            .write(to: floatingURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
+        try floatingIndexXML()
+            .write(to: floatingURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
         try blankCAML()
             .write(to: foregroundURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
         try floatingIndexXML()
@@ -255,7 +254,6 @@ enum DescriptorBuilder {
         preferredTransform: CGAffineTransform,
         outputSize: CGSize,
         outputFrameRate: Double,
-        filter: WallpaperFilter = .none,
         to assetsURL: URL
     ) async throws -> [String] {
         let reader = try AVAssetReader(asset: asset)
@@ -318,9 +316,7 @@ enum DescriptorBuilder {
                 ) else {
                     throw BuildError.frameEncodingFailed
                 }
-                // 构建 #27：滤镜逐帧套（.none 不套，失败回原帧）。
-                let filteredCG = WallpaperEffects.apply(filter, to: cgImage)
-                guard let data = UIImage(cgImage: filteredCG).jpegData(compressionQuality: jpegQuality) else {
+                guard let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: jpegQuality) else {
                     throw BuildError.frameEncodingFailed
                 }
                 return data
@@ -510,31 +506,19 @@ enum DescriptorBuilder {
 
     // MARK: - CAML（Core Animation 描述文件）
 
-    /// 缓慢缩放动画（构建 #27，构建 #28 从 10 秒加快到 6 秒）：背景层
-    /// 1.0→1.08 缓慢放大再缩回，6 秒一个来回，无限循环。加在 Chip 层上
-    /// （包住 CALayer1，整张壁纸一起缩放）。
-    private static let slowZoomAnimationXML = """
-<animations>
-  <animation type="CABasicAnimation" keyPath="transform.scale" fromValue="1" toValue="1.08" duration="6" timingFunction="easeInEaseOut" autoreverses="1" repeatCount="inf" removedOnCompletion="0"/>
-</animations>
-"""
-
     /// 背景动画：一个 CALayer，第一帧是 assets/0.jpg，挂一个 CAKeyframeAnimation
     /// 按 contents 逐帧切换；必须带 Locked / Unlock / Sleep 三态和六组状态切换，
     /// 否则 PosterBoard 不认。
-    /// slowZoom（构建 #27）：为 true 时 Chip 层加缓慢缩放动画。
     private static func caml(
         width: Int,
         height: Int,
         frameNames: [String],
         duration: Double,
         autoReverses: Bool,
-        slowZoom: Bool = false
     ) -> String {
         let values = frameNames
             .map { "        <CGImage src=\"assets/\($0)\"/>" }
             .joined(separator: "\n")
-        let zoomXML = slowZoom ? slowZoomAnimationXML : ""
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <caml xmlns="http://www.apple.com/CoreAnimation/1.0">
@@ -553,50 +537,6 @@ enum DescriptorBuilder {
                     </animations>
                   </CALayer>
                 </sublayers>
-              \(zoomXML)              </CATransformLayer>
-            </sublayers>
-            <states><LKState name="Locked"><elements/></LKState><LKState name="Unlock"><elements/></LKState><LKState name="Sleep"><elements/></LKState></states>
-            <stateTransitions><LKStateTransition fromState="*" toState="Unlock"><elements/></LKStateTransition><LKStateTransition fromState="Unlock" toState="*"><elements/></LKStateTransition><LKStateTransition fromState="*" toState="Locked"><elements/></LKStateTransition><LKStateTransition fromState="Locked" toState="*"><elements/></LKStateTransition><LKStateTransition fromState="*" toState="Sleep"><elements/></LKStateTransition><LKStateTransition fromState="Sleep" toState="*"><elements/></LKStateTransition></stateTransitions>
-          </CALayer>
-        </caml>
-        """
-    }
-
-    /// Floating.ca 的特效 CAML（构建 #27，构建 #28 删变身后只剩光晕层 + 粒子层）。
-    /// 图层顺序（后画的在上面）：光晕（ambient）→ 粒子。粒子和光晕都带
-    /// 无限循环的 CABasicAnimation。有特效时用这个；全空时用 blankCAML（不变）。
-    private static func effectsFloatingCAML(
-        width: Int,
-        height: Int,
-        effects: WallpaperEffects
-    ) -> String {
-        let cx = width / 2
-        let cy = height / 2
-        var layers: [String] = []
-
-        if effects.ambient {
-            layers.append(layerXML(
-                id: "AmbientGlow",
-                width: width, height: height, x: cx, y: cy,
-                opacity: "0.3", src: "assets/glow.png",
-                animations: [basicAnimationXML(
-                    keyPath: "opacity", from: "0.3", to: "0.7",
-                    duration: "4", timing: "easeInEaseOut", autoreverses: "1"
-                )]
-            ))
-        }
-        layers.append(contentsOf: particleLayerXMLs(width: width, height: height, style: effects.particle))
-
-        let sublayers = layers.joined(separator: "\n")
-        return """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <caml xmlns="http://www.apple.com/CoreAnimation/1.0">
-          <CALayer allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" hidden="0" name="_FLOATING" position="\(cx) \(cy)">
-            <sublayers>
-              <CATransformLayer allowsEdgeAntialiasing="1" allowsGroupOpacity="1" allowsHitTesting="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" name="Chip" position="\(cx) \(cy)">
-                <sublayers>
-        \(sublayers)
-                </sublayers>
               </CATransformLayer>
             </sublayers>
             <states><LKState name="Locked"><elements/></LKState><LKState name="Unlock"><elements/></LKState><LKState name="Sleep"><elements/></LKState></states>
@@ -604,164 +544,6 @@ enum DescriptorBuilder {
           </CALayer>
         </caml>
         """
-    }
-
-    /// 一个 Floating 图层的 CAML（id、尺寸、位置、透明度、贴图、动画列表）。
-    /// 用行拼接而不是多行字面量，避免缩进被字面量的收尾引号吃掉。
-    private static func layerXML(
-        id: String,
-        width: Int, height: Int,
-        x: Int, y: Int,
-        opacity: String,
-        src: String,
-        animations: [String]
-    ) -> String {
-        var lines: [String] = []
-        lines.append("                  <CALayer id=\"\(id)\" allowsEdgeAntialiasing=\"1\" allowsGroupOpacity=\"1\" bounds=\"0 0 \(width) \(height)\" contentsFormat=\"RGBA8\" cornerCurve=\"circular\" name=\"\(id)\" opacity=\"\(opacity)\" position=\"\(x) \(y)\">")
-        lines.append("                    <contents type=\"CGImage\" src=\"\(src)\"/>")
-        if !animations.isEmpty {
-            lines.append("                    <animations>")
-            lines.append(contentsOf: animations)
-            lines.append("                    </animations>")
-        }
-        lines.append("                  </CALayer>")
-        return lines.joined(separator: "\n")
-    }
-
-    /// 一条无限循环的 CABasicAnimation（粒子/光晕/缩放共用）。
-    /// duration 传字符串，避免 Double 插值出现 7.300000000000001 这种数。
-    private static func basicAnimationXML(
-        keyPath: String,
-        from: String,
-        to: String,
-        duration: String,
-        timing: String = "easeInEaseOut",
-        autoreverses: String = "1",
-        beginTime: String? = nil
-    ) -> String {
-        let begin = beginTime.map { " beginTime=\"\($0)\"" } ?? ""
-        return "                      <animation type=\"CABasicAnimation\" keyPath=\"\(keyPath)\" fromValue=\"\(from)\" toValue=\"\(to)\" duration=\"\(duration)\" timingFunction=\"\(timing)\" autoreverses=\"\(autoreverses)\" repeatCount=\"inf\"\(begin) removedOnCompletion=\"0\"/>"
-    }
-
-    /// 粒子图层的 CAML（构建 #27，构建 #28 修雨/雪不生效 + 全部加快）。
-    /// 流光：6 个圆点，缓慢漂移 + 透明度呼吸，时长 3–5 秒各不相同。
-    /// 雨：8 条雨丝，从各自的起点落到底（linear，不往返），0.8–1.2 秒。
-    /// 雪：8 片雪花，下落（linear，不往返）+ 左右轻摆（往返）+ 透明度呼吸，4–6 秒。
-    /// 构建 #28 雨/雪修法：去掉 beginTime（锁屏动画时间轴对不上它，粒子
-    /// 一直卡在屏幕外）；8 个粒子的起始 y 均匀铺在屏幕里（雨 -100～1860，
-    /// 雪 -60～1830），每条从自己的起点落到底（雨 +2120，雪 +2040），落到底
-    /// 跳回起点继续落——屏幕上任何时候都有雨/雪在不同高度。
-    private static func particleLayerXMLs(width: Int, height: Int, style: ParticleStyle) -> [String] {
-        switch style {
-        case .none:
-            return []
-        case .stream:
-            // 6 个圆点：位置分散；x/y 漂移时长各不相同，透明度 2.5 秒一呼吸。
-            // 时长用字符串字面量，避免 Double 插值出长尾小数。
-            // 构建 #28：漂移 5–10 秒 → 3–5 秒，呼吸 4 秒 → 2.5 秒。
-            let dots: [(x: Int, y: Int, dur: String, yDur: String)] = [
-                (180, 350, "3", "4"),
-                (520, 800, "4.2", "5"),
-                (880, 450, "3.5", "4.5"),
-                (300, 1300, "5", "5.5"),
-                (700, 1600, "3.8", "4.8"),
-                (950, 1050, "4.5", "5.2")
-            ]
-            return dots.enumerated().map { index, dot in
-                layerXML(
-                    id: "Particle\(index)",
-                    width: 64, height: 64, x: dot.x, y: dot.y,
-                    opacity: "0.8", src: "assets/particle.png",
-                    animations: [
-                        basicAnimationXML(keyPath: "position.x", from: "\(dot.x - 40)", to: "\(dot.x + 40)", duration: dot.dur),
-                        basicAnimationXML(keyPath: "position.y", from: "\(dot.y - 30)", to: "\(dot.y + 30)", duration: dot.yDur),
-                        basicAnimationXML(keyPath: "opacity", from: "0.4", to: "1", duration: "2.5")
-                    ]
-                )
-            }
-        case .rain:
-            // 8 条雨丝：x 铺满宽度，起始 y 铺满屏幕（-100～1860），每条从自己的
-            // 起点落到起点 + 2120（linear，不往返，无 beginTime），落到底跳回起点。
-            // 0.8–1.2 秒一条，8 条错开时长。
-            let xs = [80, 200, 340, 470, 600, 740, 870, 1000]
-            let startYs = [-100, 180, 460, 740, 1020, 1300, 1580, 1860]
-            let durations = ["0.8", "1", "0.9", "1.2", "0.85", "1.1", "0.95", "1.15"]
-            return xs.enumerated().map { index, x in
-                let startY = startYs[index]
-                return layerXML(
-                    id: "Rain\(index)",
-                    width: 8, height: 64, x: x, y: startY,
-                    opacity: "0.7", src: "assets/rain.png",
-                    animations: [basicAnimationXML(
-                        keyPath: "position.y", from: "\(startY)", to: "\(startY + 2120)",
-                        duration: durations[index], timing: "linear",
-                        autoreverses: "0"
-                    )]
-                )
-            }
-        case .snow:
-            // 8 片雪花：起始 y 铺满屏幕（-60～1830），每片从自己的起点落到
-            // 起点 + 2040（linear，不往返，无 beginTime），落到底跳回起点；
-            // 再加左右轻摆（往返，时长是下落的一半左右）+ 透明度呼吸 2 秒。
-            // 下落 4–6 秒（原来 6.5–10 秒）。
-            let xs = [120, 260, 400, 540, 680, 820, 950, 60]
-            let startYs = [-60, 210, 480, 750, 1020, 1290, 1560, 1830]
-            let durations = ["4", "5.5", "4.5", "6", "4.8", "5.2", "4.3", "5.8"]
-            let swayDurations = ["2", "2.8", "2.2", "3", "2.4", "2.6", "2.1", "2.9"]
-            return xs.enumerated().map { index, x in
-                let startY = startYs[index]
-                return layerXML(
-                    id: "Snow\(index)",
-                    width: 48, height: 48, x: x, y: startY,
-                    opacity: "0.8", src: "assets/snow.png",
-                    animations: [
-                        basicAnimationXML(
-                            keyPath: "position.y", from: "\(startY)", to: "\(startY + 2040)",
-                            duration: durations[index], timing: "linear",
-                            autoreverses: "0"
-                        ),
-                        basicAnimationXML(keyPath: "position.x", from: "\(x - 30)", to: "\(x + 30)", duration: swayDurations[index]),
-                        basicAnimationXML(keyPath: "opacity", from: "0.5", to: "1", duration: "2")
-                    ]
-                )
-            }
-        }
-    }
-
-    /// 写 Floating.ca 包（构建 #27，构建 #28 删变身后只剩特效）：
-    /// - effects 全空 → blankCAML + floatingIndexXML（和原来一样）。
-    /// - 有特效 → 粒子/光晕贴图写进 assets，main.caml 用
-    ///   effectsFloatingCAML（带图层），index.xml 用 1080×1920 的 indexXML。
-    private static func writeFloatingPackage(
-        at floatingURL: URL,
-        size: CGSize,
-        effects: WallpaperEffects
-    ) throws {
-        let fileManager = FileManager.default
-        let hasEffects = !effects.isEmpty
-        guard hasEffects else {
-            try blankCAML()
-                .write(to: floatingURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
-            try floatingIndexXML()
-                .write(to: floatingURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
-            return
-        }
-        let assetsURL = floatingURL.appendingPathComponent("assets", isDirectory: true)
-        if effects.particle != .none,
-           let particleData = WallpaperEffects.particleImage(for: effects.particle) {
-            try fileManager.createDirectory(at: assetsURL, withIntermediateDirectories: true)
-            try particleData.write(to: assetsURL.appendingPathComponent(effects.particle.assetFileName), options: .atomic)
-        }
-        if effects.ambient, let glowData = WallpaperEffects.glowImage() {
-            try fileManager.createDirectory(at: assetsURL, withIntermediateDirectories: true)
-            try glowData.write(to: assetsURL.appendingPathComponent("glow.png"), options: .atomic)
-        }
-        try effectsFloatingCAML(
-            width: Int(size.width), height: Int(size.height),
-            effects: effects
-        ).write(to: floatingURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
-        try indexXML(width: Int(size.width), height: Int(size.height))
-            .write(to: floatingURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
     }
 
     /// 前景包用空白 CAML（一个空图层），和 Placard 的模板一致。
