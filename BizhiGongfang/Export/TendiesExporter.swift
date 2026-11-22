@@ -91,10 +91,10 @@ enum TendiesExporter {
     }
 
     /// 视频 MOV → 帧描述符 → .tendies（记录页的视频记录用）。
-    static func exportVideo(videoURL: URL, name: String, effects: WallpaperEffects = .init()) async throws -> URL {
+    static func exportVideo(videoURL: URL, name: String) async throws -> URL {
         let workspace = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: workspace) }
-        let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace, effects: effects)
+        let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace)
         return try exportDescriptor(descriptor, name: name)
     }
 
