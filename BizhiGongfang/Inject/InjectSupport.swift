@@ -94,13 +94,15 @@ enum InjectFlow {
     /// 把一段视频（MOV）写成锁屏壁纸。返回写进去的 poster UUID。
     /// still 用于在"我的壁纸"里留一条记录（和导出 Live Photo 的记录一样，
     /// 只是多标了已写入锁屏，之后可以只删这一张）。
+    /// parallax：陀螺仪 3D 视差（构建 #30，默认开），见 DescriptorBuilder.caml()。
     static func injectVideo(
         videoURL: URL,
         name: String,
         kind: WallpaperItem.Kind,
         still: UIImage,
         stillJPEGData: Data,
-        store: WallpaperStore
+        store: WallpaperStore,
+        parallax: Bool = true
     ) async throws -> String {
         guard PosterBoardStore.isAvailable else {
             throw InjectError.missingAppGroup
@@ -110,7 +112,7 @@ enum InjectFlow {
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: workspace) }
 
-        let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace)
+        let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace, parallax: parallax)
         let appHash = try PosterBoardStore.findPosterBoardHash()
         let written = try PosterBoardStore.writeDescriptors(
             appHash: appHash,
