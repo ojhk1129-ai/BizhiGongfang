@@ -42,8 +42,9 @@ enum TendiesExporter {
         }
     }
 
-    /// 帧尺寸：和直写一致，1080×1920（单帧探针已证实能渲染）。
-    static let frameSize = CGSize(width: 1080, height: 1920)
+    /// 帧尺寸：和直写一致，1080×2338（构建 #30：与 13 Pro 屏幕同比例，
+    /// 单张照片导出后设锁屏也不会被放大裁切发糊）。
+    static let frameSize = CGSize(width: 1080, height: 2338)
 
     // MARK: - 入口
 
@@ -80,7 +81,7 @@ enum TendiesExporter {
         return tendiesURL
     }
 
-    /// 单张照片：静态 .tendies（1080×1920 单帧描述符）。
+    /// 单张照片：静态 .tendies（1080×2338 单帧描述符）。
     static func exportSinglePhoto(image: UIImage, name: String) throws -> URL {
         let workspace = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: workspace) }
@@ -91,10 +92,11 @@ enum TendiesExporter {
     }
 
     /// 视频 MOV → 帧描述符 → .tendies（记录页的视频记录用）。
-    static func exportVideo(videoURL: URL, name: String) async throws -> URL {
+    /// parallax：陀螺仪 3D 视差（构建 #30，默认开），和直写一致。
+    static func exportVideo(videoURL: URL, name: String, parallax: Bool = true) async throws -> URL {
         let workspace = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: workspace) }
-        let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace)
+        let descriptor = try await DescriptorBuilder.buildDescriptor(from: videoURL, in: workspace, parallax: parallax)
         return try exportDescriptor(descriptor, name: name)
     }
 
