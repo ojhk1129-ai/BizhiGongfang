@@ -35,8 +35,9 @@ enum DescriptorBuilder {
     static let outputFrameRate: Double = 15
     /// 帧长边上限（像素），和 Placard 一致。
     static let maximumLongEdge: CGFloat = 1920
-    /// 帧 JPEG 质量，和 Placard 一致。
-    static let jpegQuality: CGFloat = 0.7
+    /// 帧 JPEG 质量（构建 #30：0.7→0.85，配合比例修复减少压缩糊；
+    /// 单张壁纸文件会变大，12 秒约 150 帧）。
+    static let jpegQuality: CGFloat = 0.85
 
     static let providerID = "com.apple.WallpaperKit.CollectionsPoster"
     /// 构建 #24（2026-11-21，Camlo 对照）：模板改 iPhone 类 + 3 个 .ca 包。
@@ -52,9 +53,11 @@ enum DescriptorBuilder {
     /// 从 MOV 生成一个描述符文件夹（放在 workspace 里），返回文件夹地址。
     /// 调用方负责把文件夹写进 PosterBoard 后清理 workspace。
     /// 输出尺寸强制设备原生竖屏（见 devicePortraitOutputSize），不跟源视频走。
+    /// parallax：陀螺仪 3D 视差（构建 #30，默认开），见 caml()。
     static func buildDescriptor(
         from videoURL: URL,
-        in workspace: URL
+        in workspace: URL,
+        parallax: Bool = true
     ) async throws -> URL {
         let asset = AVURLAsset(url: videoURL)
         let duration = try await asset.load(.duration)
@@ -112,6 +115,7 @@ enum DescriptorBuilder {
             frameNames: frameNames,
             duration: durationSeconds,
             autoReverses: false,
+            parallax: parallax,
         ).write(to: animationURL.appendingPathComponent("main.caml"), atomically: true, encoding: .utf8)
         try indexXML(width: Int(outputSize.width), height: Int(outputSize.height))
             .write(to: animationURL.appendingPathComponent("index.xml"), atomically: true, encoding: .utf8)
@@ -227,14 +231,19 @@ enum DescriptorBuilder {
 
     // MARK: - 抽帧
 
-    /// 输出尺寸：固定 1080×1920（构建 #22，见下）。
+    /// 输出尺寸：固定 1080×2338（构建 #30，2026-11-26，见下）。
     /// 原先是 Placard VideoWallpaper.swift 的算法：iPhone 按
     /// UIScreen.main.nativeBounds 的长短边比例，长边上限 maximumLongEdge，
     /// 短边向下取偶数；iPhone 13 Pro（native 1170×2532）→ 886×1920。
     /// 但单帧照片探针实测（2026-11-20 19:57–19:59 CST）证明 886×1920
     /// 不渲染：探针 A（1080×1920）显示为照片 tile，探针 B（886×1920）
     /// 直接黑屏；两者只差尺寸，走同一条写入路径。所以视频/变身的输出
-    /// 尺寸改成和探针 A 一样的 1080×1920。iPad 仍按 810:1080 的比例。
+    /// 尺寸改成和探针 A 一样的 1080×1920（构建 #22）。iPad 仍按 810:1080 的比例。
+    /// 构建 #30：用户 2026-11-26 15:46 CST 报注入的动态壁纸全部放大发糊。
+    /// 1080×1920 是 9:16，13 Pro 屏幕 1170×2532 是 9:19.5，锁屏为铺满屏幕
+    /// 要放大 1.32 倍再左右各裁一截，所以糊。保持宽度 1080（已证实能显示），
+    /// 高度改成 2338（1080×2532/1170 = 2337.2，取偶数 2338），比例与屏幕
+    /// 完全一致，锁屏只放大 1170/1080 = 1.08 倍、不裁边。
     /// 取 UIScreen.main 必须在 MainActor 上，buildDescriptor 不在 MainActor 上，
     /// 所以这里包一层 await MainActor.run。
     private static func devicePortraitOutputSize() async -> CGSize {
@@ -244,7 +253,7 @@ enum DescriptorBuilder {
                 let shortEdge = (longEdge * 810 / 1080 / 2).rounded(.down) * 2
                 return CGSize(width: shortEdge, height: longEdge)
             }
-            return CGSize(width: 1080, height: 1920)
+            return CGSize(width: 1080, height: 2338)
         }
     }
 
@@ -509,24 +518,60 @@ enum DescriptorBuilder {
     /// 背景动画：一个 CALayer，第一帧是 assets/0.jpg，挂一个 CAKeyframeAnimation
     /// 按 contents 逐帧切换；必须带 Locked / Unlock / Sleep 三态和六组状态切换，
     /// 否则 PosterBoard 不认。
+    /// 陀螺仪 3D（构建 #30，默认开）：ParameterizedCA 视差，格式照 Camlo v1.3.0
+    /// 的模板（从它 IPA 的 CAML 模板字符串核对：根图层 wantsDeviceMotion +
+    /// <style> 里的 wallpaperParallaxGroups，把设备晃动映射到视频层的
+    /// transform.translation.x/y；视频层外包一层 1.08 倍 overscan，给平移留
+    /// 余量，晃动时边缘不露黑）。视差要留余量，所以画面会比屏幕大 8% 左右；
+    /// 关掉则回到原来的单层结构（画面正好铺满屏幕）。
+    /// 注意：这是按 Camlo 模板的首次实现，真机上晃手机看壁纸动不动就知道
+    /// 有没有生效；不生效也只是没视差，不影响壁纸本身显示。
     private static func caml(
         width: Int,
         height: Int,
         frameNames: [String],
         duration: Double,
         autoReverses: Bool,
+        parallax: Bool = true,
     ) -> String {
         let values = frameNames
             .map { "        <CGImage src=\"assets/\($0)\"/>" }
             .joined(separator: "\n")
-        return """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <caml xmlns="http://www.apple.com/CoreAnimation/1.0">
-          <CALayer allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" hidden="0" name="_FLOATING" position="\(width / 2) \(height / 2)">
-            <sublayers>
-              <CATransformLayer allowsEdgeAntialiasing="1" allowsGroupOpacity="1" allowsHitTesting="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" name="Chip" position="\(width / 2) \(height / 2)">
-                <sublayers>
-                  <CALayer allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" name="CALayer1" position="\(width / 2) \(height / 2)">
+        let cx = width / 2
+        let cy = height / 2
+
+        // 视差组：X/Y 各一组，晃动范围 ±30（文档坐标点）。用数组拼串，
+        // 不用多行字符串，避免缩进问题（构建 #17 的教训）。
+        let parallaxGroupLines = { (axis: String, keyPath: String, title: String) in
+            [
+                "              <NSDictionary>",
+                "                <axis type=\"string\" value=\"\(axis)\"/>",
+                "                <image type=\"string\" value=\"null\"/>",
+                "                <keyPath type=\"string\" value=\"\(keyPath)\"/>",
+                "                <layerName type=\"string\" value=\"VideoParallax\"/>",
+                "                <mapMaxTo type=\"integer\" value=\"30\"/>",
+                "                <mapMinTo type=\"integer\" value=\"-30\"/>",
+                "                <title type=\"string\" value=\"\(title)\"/>",
+                "                <v_home type=\"real\" value=\"0\"/>",
+                "                <v_lock type=\"real\" value=\"0\"/>",
+                "                <v_sleep type=\"real\" value=\"0\"/>",
+                "                <view type=\"string\" value=\"lock\"/>",
+                "              </NSDictionary>",
+            ].joined(separator: "\n")
+        }
+        let parallaxStyle = parallax ? [
+            "      <style>",
+            "        <wallpaperParallaxGroups type=\"NSArray\">",
+            parallaxGroupLines("x", "transform.translation.x", "Video Parallax X"),
+            parallaxGroupLines("y", "transform.translation.y", "Video Parallax Y"),
+            "        </wallpaperParallaxGroups>",
+            "      </style>",
+        ].joined(separator: "\n") : ""
+        let rootExtra = parallax ? " wantsDeviceMotion=\"1\" masksToBounds=\"1\"" : ""
+
+        // 视频内容层：CALayer1（逐帧动画）。
+        let contentLayer = """
+                  <CALayer allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" name="CALayer1" position="\(cx) \(cy)">
                     <contents type="CGImage" src="assets/0.jpg"/>
                     <animations>
                       <animation type="CAKeyframeAnimation" calculationMode="discrete" keyPath="contents" beginTime="1e-100" duration="\(duration)" removedOnCompletion="0" repeatCount="inf" repeatDuration="0" speed="1" timeOffset="0" autoreverses="\(autoReverses ? 1 : 0)">
@@ -536,6 +581,35 @@ enum DescriptorBuilder {
                       </animation>
                     </animations>
                   </CALayer>
+        """
+        // 开视差时包两层：VideoParallax（被晃动平移的目标层）+
+        // VideoOverscan（1.08 倍放大，给平移留余量）。
+        let videoLayer: String
+        if parallax {
+            videoLayer = """
+                  <CALayer id="video_parallax" name="VideoParallax" allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" position="\(cx) \(cy)">
+                    <sublayers>
+                      <CALayer id="video_overscan" name="VideoOverscan" allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" position="\(cx) \(cy)" transform="scale(1.08, 1.08)">
+                        <sublayers>
+        \(contentLayer)
+                        </sublayers>
+                      </CALayer>
+                    </sublayers>
+                  </CALayer>
+        """
+        } else {
+            videoLayer = contentLayer
+        }
+
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <caml xmlns="http://www.apple.com/CoreAnimation/1.0">
+          <CALayer allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" hidden="0" name="_FLOATING" position="\(cx) \(cy)"\(rootExtra)>
+        \(parallaxStyle)
+            <sublayers>
+              <CATransformLayer allowsEdgeAntialiasing="1" allowsGroupOpacity="1" allowsHitTesting="1" bounds="0 0 \(width) \(height)" contentsFormat="RGBA8" cornerCurve="circular" name="Chip" position="\(cx) \(cy)">
+                <sublayers>
+        \(videoLayer)
                 </sublayers>
               </CATransformLayer>
             </sublayers>
