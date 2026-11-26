@@ -12,6 +12,7 @@ struct VideoEditorView: View {
     @State private var showPicker = false
     @State private var isInjecting = false
     @State private var isExportingTendies = false
+    @State private var gyroParallax = true
     @State private var tendiesURL: URL?
     @State private var showTendiesShare = false
     @State private var showRespringPrompt = false
@@ -25,6 +26,7 @@ struct VideoEditorView: View {
                 previewSection
                 infoSection
                 pickSection
+                effectSection
                 exportSection
             }
             .padding()
@@ -120,6 +122,18 @@ struct VideoEditorView: View {
         .buttonStyle(.bordered)
     }
 
+    /// 陀螺仪 3D（构建 #30）：打开后锁屏壁纸会跟着手机倾斜轻轻移动。
+    /// 视差要留出移动余量，画面会比屏幕大一点点；关掉则画面正好铺满屏幕。
+    private var effectSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("陀螺仪 3D", isOn: $gyroParallax)
+            Text("打开后，锁屏壁纸会跟着手机倾斜轻轻移动；画面会比屏幕大一点点来留出移动余量。")
+                .font(.footnote)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var exportSection: some View {
         VStack(spacing: 8) {
             InjectButton(ready: videoURL != nil && !isExportingTendies, busy: isInjecting) {
@@ -176,7 +190,8 @@ struct VideoEditorView: View {
                     do {
                         let url = try await TendiesExporter.exportVideo(
                             videoURL: cropped.videoURL,
-                            name: WallpaperStore.defaultName(for: .video)
+                            name: WallpaperStore.defaultName(for: .video),
+                            parallax: self.gyroParallax
                         )
                         await MainActor.run {
                             self.isExportingTendies = false
@@ -226,7 +241,8 @@ struct VideoEditorView: View {
                             kind: .video,
                             still: still,
                             stillJPEGData: jpegData,
-                            store: self.store
+                            store: self.store,
+                            parallax: self.gyroParallax
                         )
                         await MainActor.run {
                             self.isInjecting = false
