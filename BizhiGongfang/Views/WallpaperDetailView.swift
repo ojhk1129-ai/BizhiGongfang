@@ -33,6 +33,11 @@ struct WallpaperDetailView: View {
         FileManager.default.fileExists(atPath: store.videoURL(for: item).path)
     }
 
+    /// 这条记录有没有存原 .tendies 包（导入壁纸才有，可分享）。
+    private var hasPackage: Bool {
+        FileManager.default.fileExists(atPath: store.packageURL(for: item).path)
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -73,24 +78,43 @@ struct WallpaperDetailView: View {
                             }
                         }
 
-                        Button {
-                            exportTendies()
-                        } label: {
-                            if isExportingTendies {
-                                ProgressView()
-                                    .frame(maxWidth: .infinity)
-                            } else {
-                                Label("导出 .tendies", systemImage: "square.and.arrow.up")
+                        // 导入壁纸没有视频，直接分享存的原 .tendies 包；
+                        // 视频壁纸走导出（用存的 MOV 重建描述符再打包）。
+                        if item.kind == .imported {
+                            Button {
+                                tendiesURL = store.packageURL(for: item)
+                                showTendiesShare = true
+                            } label: {
+                                Label("分享 .tendies", systemImage: "square.and.arrow.up")
                                     .frame(maxWidth: .infinity)
                             }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(isExportingTendies)
+                            .buttonStyle(.bordered)
+                            .disabled(!hasPackage)
 
-                        Text("导出后用 Camlo「导入外部 .tendies 壁纸包」安装；不依赖直写。")
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            Text("把这张壁纸的原 .tendies 包分享出去（存到文件、隔空投送）。")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            Button {
+                                exportTendies()
+                            } label: {
+                                if isExportingTendies {
+                                    ProgressView()
+                                        .frame(maxWidth: .infinity)
+                                } else {
+                                    Label("导出 .tendies", systemImage: "square.and.arrow.up")
+                                        .frame(maxWidth: .infinity)
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(isExportingTendies)
+
+                            Text("导出后用 Camlo「导入外部 .tendies 壁纸包」安装；不依赖直写。")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
 
                         // 只删锁屏画廊里的这一张（按记录的描述符 UUID 精确删），
                         // 本地这张壁纸不动。
