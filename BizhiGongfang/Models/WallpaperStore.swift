@@ -8,6 +8,7 @@ struct WallpaperItem: Identifiable, Codable, Equatable {
         case depth
         case video
         case gradient
+        case imported
 
         var displayName: String {
             switch self {
@@ -15,6 +16,7 @@ struct WallpaperItem: Identifiable, Codable, Equatable {
             case .depth: return "景深壁纸"
             case .video: return "视频壁纸"
             case .gradient: return "渐变壁纸"
+            case .imported: return "云端壁纸"
             }
         }
     }
@@ -121,6 +123,38 @@ final class WallpaperStore: ObservableObject {
         return item
     }
 
+    /// 保存一张从云端库导入的壁纸，返回创建的记录。
+    /// 存 still.jpg（静态图，可空）、package.tendies（原包，可再分享）、
+    /// thumb.jpg（缩略图）。没有 video.mov（导入的 .tendies 不是视频），
+    /// 所以详情页不显示“播放动态”/“一键写入锁屏”。
+    @discardableResult
+    func addImported(
+        name: String,
+        stillJPEGData: Data?,
+        packageURL: URL,
+        thumbnail: UIImage?
+    ) -> WallpaperItem {
+        let item = WallpaperItem(
+            id: UUID(),
+            name: name,
+            kind: .imported,
+            createdAt: Date(),
+            stillImageTime: 0
+        )
+        let directory = folderURL.appendingPathComponent(item.id.uuidString, isDirectory: true)
+        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        if let stillJPEGData = stillJPEGData {
+            try? stillJPEGData.write(to: directory.appendingPathComponent("still.jpg"))
+        }
+        try? fileManager.copyItem(at: packageURL, to: directory.appendingPathComponent("package.tendies"))
+        if let thumbnail = thumbnail, let thumbData = thumbnail.jpegData(compressionQuality: 0.8) {
+            try? thumbData.write(to: directory.appendingPathComponent("thumb.jpg"))
+        }
+        items.insert(item, at: 0)
+        saveIndex()
+        return item
+    }
+
     func delete(_ item: WallpaperItem) {
         items.removeAll { $0.id == item.id }
         try? fileManager.removeItem(at: folderURL.appendingPathComponent(item.id.uuidString))
@@ -164,6 +198,11 @@ final class WallpaperStore: ObservableObject {
 
     func videoURL(for item: WallpaperItem) -> URL {
         folderURL.appendingPathComponent(item.id.uuidString).appendingPathComponent("video.mov")
+    }
+
+    /// 导入壁纸的原 .tendies 包（addImported 时存的）。
+    func packageURL(for item: WallpaperItem) -> URL {
+        folderURL.appendingPathComponent(item.id.uuidString).appendingPathComponent("package.tendies")
     }
 
     func thumbnail(for item: WallpaperItem) -> UIImage? {
