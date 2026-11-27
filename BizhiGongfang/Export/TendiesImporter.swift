@@ -114,19 +114,25 @@ enum TendiesImporter {
         }
 
         // 记一条导入记录到我的壁纸（可删锁屏里的这一张）。
+        // store 是 ObservableObject，改 @Published 必须在主线程，
+        // 不然在 LiveContainer 里可能闪退。
         let thumbnail: UIImage?
         if let stillJPEGData = stillJPEGData, let image = UIImage(data: stillJPEGData) {
             thumbnail = WallpaperStore.makeThumbnail(from: image)
         } else {
             thumbnail = nil
         }
-        let item = store.addImported(
-            name: name,
-            stillJPEGData: stillJPEGData,
-            packageURL: packageURL,
-            thumbnail: thumbnail
-        )
-        store.markInjected(id: item.id, posterUUID: posterUUID, provider: provider)
+        let item = await MainActor.run {
+            store.addImported(
+                name: name,
+                stillJPEGData: stillJPEGData,
+                packageURL: packageURL,
+                thumbnail: thumbnail
+            )
+        }
+        await MainActor.run {
+            store.markInjected(id: item.id, posterUUID: posterUUID, provider: provider)
+        }
 
         return InstalledTendies(
             posterUUID: posterUUID,
@@ -249,11 +255,38 @@ enum TendiesImporter {
 
     // MARK: - 从描述符取静态图
 
-    /// 描述符里找 <*.wallpaper> 文件夹（versions/1/contents/ 下）。
+    /// 描述符里找 <*.wallpaper> 文件夹。
+    /// 社区包有的用 versions/1/，有的用 versions/0/（比如 Nugget 的
+    /// A$AP ROCKY），两个都找；都没有再扫一遍 versions/ 下所有版本。
     private static func findWallpaperDir(in descriptorURL: URL) -> URL? {
         let fileManager = FileManager.default
-        let contentsDir = descriptorURL
-            .appendingPathComponent("versions/1/contents", isDirectory: true)
+        let versionsDir = descriptorURL.appendingPathComponent("versions", isDirectory: true)
+        // 先按常见顺序找 versions/1/、versions/0/。
+        for version in ["1", "0"] {
+            let contentsDir = versionsDir
+                .appendingPathComponent(version, isDirectory: true)
+                .appendingPathComponent("contents", isDirectory: true)
+            if let found = wallpaperDir(in: contentsDir) {
+                return found
+            }
+        }
+        // 兜底：扫 versions/ 下所有版本文件夹。
+        guard let versionDirs = try? fileManager.contentsOfDirectory(
+            at: versionsDir, includingPropertiesForKeys: [.isDirectoryKey], options: []
+        ) else { return nil }
+        for versionDir in versionDirs.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            guard (try? versionDir.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+            let contentsDir = versionDir.appendingPathComponent("contents", isDirectory: true)
+            if let found = wallpaperDir(in: contentsDir) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    /// 一个 contents/ 文件夹里找带 Wallpaper.plist 的 <*.wallpaper> 文件夹。
+    private static func wallpaperDir(in contentsDir: URL) -> URL? {
+        let fileManager = FileManager.default
         guard let children = try? fileManager.contentsOfDirectory(at: contentsDir, includingPropertiesForKeys: [.isDirectoryKey], options: []) else {
             return nil
         }
@@ -268,8 +301,10 @@ enum TendiesImporter {
         return nil
     }
 
-    /// 第一帧完整 JPEG 数据：Background .ca 的 assets/0.jpg 优先，
-    /// 否则第一张 .jpg。找不到返回 nil（记录就不带静态图）。
+    /// 第一帧完整图片数据：Background .ca 的 assets 里找。
+    /// 社区包的图不一定是 .jpg（有 .jpeg、.png，比如 A$AP ROCKY 的
+    /// 全是 .png），三种都接受；0.jpg/0.png 优先，否则按名字排第一张。
+    /// 找不到返回 nil（记录就不带静态图）。
     private static func firstFrameJPEGData(wallpaperDir: URL) -> Data? {
         let fileManager = FileManager.default
         guard let children = try? fileManager.contentsOfDirectory(at: wallpaperDir, includingPropertiesForKeys: [.isDirectoryKey], options: []) else {
@@ -285,10 +320,14 @@ enum TendiesImporter {
         for caDir in ordered {
             let assetsDir = caDir.appendingPathComponent("assets", isDirectory: true)
             guard let files = try? fileManager.contentsOfDirectory(at: assetsDir, includingPropertiesForKeys: nil, options: []) else { continue }
-            let jpgs = files.filter { $0.lastPathComponent.lowercased().hasSuffix(".jpg") }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            guard !jpgs.isEmpty else { continue }
-            let first = jpgs.first { $0.lastPathComponent == "0.jpg" } ?? jpgs[0]
+            let images = files.filter {
+                let lower = $0.lastPathComponent.lowercased()
+                return lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg") || lower.hasSuffix(".png")
+            }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            guard !images.isEmpty else { continue }
+            let first = images.first { $0.lastPathComponent == "0.jpg" }
+                ?? images.first { $0.lastPathComponent == "0.png" }
+                ?? images[0]
             return try? Data(contentsOf: first)
         }
         return nil
