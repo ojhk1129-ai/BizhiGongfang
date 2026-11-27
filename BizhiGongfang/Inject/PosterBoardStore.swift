@@ -284,6 +284,12 @@ enum PosterBoardStore {
         throw InjectError.missingPath
     }
 
+    /// 本 App 写入标记的文件名（构建 #34）：写描述符时放一个 0 字节文件进去，
+    /// 已装锁屏靠它认出是自己写的。重装 App 会清掉本地记录，但描述符还
+    /// 在磁盘上，靠这个标记删按钮就不会丢。社区包里本来就有 .DS_Store
+    /// 这类杂文件，PosterBoard 不在乎描述符文件夹里多一个空文件。
+    static let writtenMarkerFileName = ".bizhigongfang-written"
+
     /// 把做好的描述符文件夹写进 PosterBoard，返回写进去后的完整路径。
     /// 每个描述符文件夹都会换成一个全新的 UUID 文件夹名。
     static func writeDescriptors(
@@ -305,6 +311,9 @@ enum PosterBoardStore {
             let target = URL(fileURLWithPath: destination, isDirectory: true)
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
             try fileManager.copyItem(at: descriptor, to: target)
+            // 打写入标记（构建 #34）：0 字节文件，证明这张是本 App 写的。
+            // 失败也不阻塞——标记只是方便认，描述符本身已经写进去了。
+            try? Data().write(to: target.appendingPathComponent(Self.writtenMarkerFileName))
             // 写后改权限（构建 #19）：苹果自带的描述符文件夹是 777，我们写的是 755；
             // 快照文件（RuntimeSnapshot-lock.atx）要写进描述符文件夹里，如果快照服务
             // 不是以 mobile 身份写，755 就写不进去。目录 0777、文件 0644。
@@ -618,6 +627,7 @@ enum PosterBoardStore {
         let frameCount: Int?
         let calculationMode: String?
         let hasSnapshot: Bool
+        let hasOurMarker: Bool
         let owner: String?
         let permissions: Int?
         let xattrNames: [String]?
@@ -713,6 +723,8 @@ enum PosterBoardStore {
         let owner = attrs?[.ownerAccountName] as? String
         let permissions = (attrs?[.posixPermissions] as? NSNumber)?.intValue
         let xattrs = extendedAttributeNames(atPath: folderPath)
+        // 本 App 写入标记（构建 #34）：描述符文件夹里有没有那个 0 字节文件。
+        let hasOurMarker = fileManager.fileExists(atPath: folderPath + "/" + writtenMarkerFileName)
 
         // 版本目录（按数字从大到小）
         let versionsURL = URL(fileURLWithPath: folderPath, isDirectory: true)
@@ -760,6 +772,7 @@ enum PosterBoardStore {
                 uuid: uuid, name: nil, identifier: nil, logicalScreenClass: nil,
                 hasBackgroundPackage: false, hasFloatingPackage: false, hasForegroundPackage: false,
                 frameCount: nil, calculationMode: nil, hasSnapshot: hasSnapshot,
+                hasOurMarker: hasOurMarker,
                 owner: owner, permissions: permissions, xattrNames: xattrs)
         }
 
@@ -812,7 +825,7 @@ enum PosterBoardStore {
             hasBackgroundPackage: backgroundPackage != nil,
             hasFloatingPackage: hasFloating, hasForegroundPackage: hasForeground,
             frameCount: frameCount, calculationMode: calculationMode,
-            hasSnapshot: hasSnapshot, owner: owner,
+            hasSnapshot: hasSnapshot, hasOurMarker: hasOurMarker, owner: owner,
             permissions: permissions, xattrNames: xattrs)
     }
 
