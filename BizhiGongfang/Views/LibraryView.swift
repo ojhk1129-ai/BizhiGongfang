@@ -17,6 +17,9 @@ struct LibraryView: View {
     @State private var respringing = false
     @State private var alertMessage: String?
     @State private var showAlert = false
+    /// 上次安装中断留下的步骤标记（构建 #34）：闪退才留得下来，正常的失败
+    /// 会走 catch 弹提示并清掉。打开壁纸库时有就显示一条横幅。
+    @State private var staleInstallMarker: (step: String, name: String)?
 
     private var filteredWallpapers: [LibraryCatalog.LibraryWallpaper] {
         let keyword = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -41,6 +44,26 @@ struct LibraryView: View {
                 .padding(.top, 8)
                 .onChange(of: source) {
                     loadCatalog()
+                }
+
+                if let marker = staleInstallMarker {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text("上次安装「\(marker.name)」在「\(marker.step)」这步中断了，可能是闪退。把这一步告诉开发者就能定位。")
+                            .font(.footnote)
+                        Spacer()
+                        Button("知道了") {
+                            TendiesImporter.InstallStepMarker.clear()
+                            staleInstallMarker = nil
+                        }
+                        .font(.footnote)
+                    }
+                    .padding(10)
+                    .background(Color.orange.opacity(0.12))
+                    .cornerRadius(10)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
                 }
 
                 if isLoading && wallpapers.isEmpty {
@@ -109,6 +132,9 @@ struct LibraryView: View {
             }
             .respringPrompt(isPresented: $showRespringPrompt, respringing: $respringing)
             .onAppear {
+                if staleInstallMarker == nil {
+                    staleInstallMarker = TendiesImporter.InstallStepMarker.read()
+                }
                 if wallpapers.isEmpty {
                     loadCatalog()
                 }
@@ -149,6 +175,7 @@ struct LibraryView: View {
         installingID = wallpaper.id
         Task {
             do {
+                TendiesImporter.InstallStepMarker.set(step: "下载 .tendies", name: wallpaper.name)
                 let packageURL = try await LibraryCatalog.downloadPackage(for: wallpaper)
                 defer { try? FileManager.default.removeItem(at: packageURL) }
                 _ = try await TendiesImporter.installTendies(
@@ -162,6 +189,9 @@ struct LibraryView: View {
                     self.showRespringPrompt = true
                 }
             } catch {
+                // 正常的失败（网络、包不对）已经弹提示了，把步骤标记清掉，
+                // 只留真正的闪退（没走到 catch 的那种）给下次打开看。
+                TendiesImporter.InstallStepMarker.clear()
                 await MainActor.run {
                     self.installingID = nil
                     self.alertMessage = "安装失败：\((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
