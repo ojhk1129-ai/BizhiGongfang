@@ -13,10 +13,19 @@ struct WallpaperDetailView: View {
     @State private var isExportingTendies = false
     @State private var tendiesURL: URL?
     @State private var showTendiesShare = false
+    @State private var isInjecting = false
+    @State private var showRespringPrompt = false
+    @State private var respringing = false
     @State private var isDeletingInjected = false
     @State private var injectedRemoved = false
     @State private var alertMessage: String?
     @State private var showAlert = false
+
+    /// 详情页里的这条记录是快照；重新写入后 store 里的记录会变，
+    /// 用这个取最新状态（“已写入锁屏”标记、删锁屏按钮都看它）。
+    private var currentItem: WallpaperItem {
+        store.items.first { $0.id == item.id } ?? item
+    }
 
     /// 这条记录有没有存 video.mov（有才显示“播放动态”，视频记录
     /// 导出 .tendies 时也要用它）。
@@ -57,6 +66,13 @@ struct WallpaperDetailView: View {
                     }
 
                     VStack(spacing: 10) {
+                        // 重新写入锁屏：用已存的视频再写一次，不用回制作页重做。
+                        if hasVideo {
+                            InjectButton(ready: !isInjecting && !isExportingTendies, busy: isInjecting) {
+                                reinjectToLockScreen()
+                            }
+                        }
+
                         Button {
                             exportTendies()
                         } label: {
@@ -78,7 +94,7 @@ struct WallpaperDetailView: View {
 
                         // 只删锁屏画廊里的这一张（按记录的描述符 UUID 精确删），
                         // 本地这张壁纸不动。
-                        if item.injectedPosterUUID != nil && !injectedRemoved {
+                        if currentItem.injectedPosterUUID != nil && !injectedRemoved {
                             Button(role: .destructive) {
                                 deleteInjectedWallpaper()
                             } label: {
@@ -124,8 +140,31 @@ struct WallpaperDetailView: View {
             } message: {
                 Text(alertMessage ?? "")
             }
+            .respringPrompt(isPresented: $showRespringPrompt, respringing: $respringing)
             .onDisappear {
                 player?.pause()
+            }
+        }
+    }
+
+    /// 重新写入锁屏：用已存的视频再写一次描述符，记到同一条记录上，
+    /// 不新建记录。写完弹 respring 提示（和制作页一样）。
+    private func reinjectToLockScreen() {
+        guard hasVideo, !isInjecting else { return }
+        isInjecting = true
+        Task {
+            do {
+                _ = try await InjectFlow.reinjectVideo(item: item, store: store)
+                await MainActor.run {
+                    self.isInjecting = false
+                    self.showRespringPrompt = true
+                }
+            } catch {
+                await MainActor.run {
+                    self.isInjecting = false
+                    self.alertMessage = "写入失败：\((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
+                    self.showAlert = true
+                }
             }
         }
     }
@@ -159,8 +198,8 @@ struct WallpaperDetailView: View {
 
     /// 只删锁屏画廊里的这一张，不删本地记录。
     private func deleteInjectedWallpaper() {
-        guard let posterUUID = item.injectedPosterUUID,
-              let provider = item.injectedProvider,
+        guard let posterUUID = currentItem.injectedPosterUUID,
+              let provider = currentItem.injectedProvider,
               !isDeletingInjected else { return }
         isDeletingInjected = true
         Task {
