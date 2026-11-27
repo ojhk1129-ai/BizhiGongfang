@@ -546,7 +546,12 @@ enum TendiesImporter {
         guard dataStart <= data.count, dataEnd <= data.count else {
             throw ImportError.corrupt("条目数据越界：\(entry.name)")
         }
-        return data[dataStart..<dataEnd]
+        // 注意：Data 切片会保留原下标（startIndex = dataStart，不是 0），
+        // 直接拿去 inflate 时 BitReader 从 pos=0 读 data[0] 会越界闪退。
+        // 包一层 Data(...) 拷一份，下标回到 0 才安全。
+        // （这就是 FrutigerAeroV1 这类 deflate 包一点就闪退的根因；
+        // stored 的包不走 inflate，所以有的能装、有的闪退。构建 #35 修。）
+        return Data(data[dataStart..<dataEnd])
     }
 
     /// 小端读 UInt16，越界抛错。
