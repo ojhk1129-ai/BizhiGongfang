@@ -93,12 +93,16 @@ enum LibraryCatalog {
     }
 
     /// 拉取一个库的目录（最新在前）。
+    /// 逐条容错：某一条解析失败就跳过它，不让一条坏数据毁掉整个列表
+    /// （CAPlayground 里有 12 条的 id 是 "0000001" 这种字符串，
+    /// 按 Int 解整个数组都会失败）。
     static func fetch(source: Source) async throws -> [LibraryWallpaper] {
         let data = try await fetchData(from: source.catalogURLs)
         switch source {
         case .caPlayground:
             let response = try JSONDecoder().decode(CAPlaygroundResponse.self, from: data)
             return response.wallpapers
+                .compactMap { $0.value }
                 .map { item in
                     LibraryWallpaper(
                         id: "cap-\(item.id)",
@@ -113,8 +117,9 @@ enum LibraryCatalog {
                 }
                 .sorted { $0.sortKey > $1.sortKey }
         case .nugget:
-            let items = try JSONDecoder().decode([NuggetItem].self, from: data)
+            let items = try JSONDecoder().decode([FailableDecodable<NuggetItem>].self, from: data)
             return items
+                .compactMap { $0.value }
                 .map { item in
                     LibraryWallpaper(
                         id: "nug-\(item.id)",
@@ -132,19 +137,21 @@ enum LibraryCatalog {
     }
 
     /// 下载一个 .tendies 包到临时目录（按顺序试下载地址），返回本地文件地址。
+    /// 用 downloadTask 直接写盘，不经过内存 Data——有的包十几 MB，
+    /// 整包进内存再解压容易把 App 顶掉（闪退）。
     static func downloadPackage(for wallpaper: LibraryWallpaper) async throws -> URL {
         var lastError: Error?
         for candidate in wallpaper.downloadCandidates {
             do {
-                let (data, response) = try await URLSession.shared.data(from: candidate)
-                guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-                      !data.isEmpty else {
+                let (tempURL, response) = try await URLSession.shared.download(from: candidate)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                     throw CatalogError.fetchFailed
                 }
+                // 移到我们自己的临时位置（download 返回的临时文件系统随时会删）。
                 let fileURL = FileManager.default.temporaryDirectory
                     .appendingPathComponent("library-\(UUID().uuidString)")
                     .appendingPathExtension("tendies")
-                try data.write(to: fileURL, options: .atomic)
+                try FileManager.default.moveItem(at: tempURL, to: fileURL)
                 return fileURL
             } catch {
                 lastError = error
@@ -175,19 +182,54 @@ enum LibraryCatalog {
 
     // MARK: - 目录 JSON 结构
 
+    /// 逐条容错的包装：某一条解失败就得 nil，整条跳过，不毁掉整个列表。
+    private struct FailableDecodable<T: Decodable>: Decodable {
+        let value: T?
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            value = try? container.decode(T.self)
+        }
+    }
+
     private struct CAPlaygroundResponse: Decodable {
         let base_url: String
-        let wallpapers: [CAPlaygroundItem]
+        let wallpapers: [FailableDecodable<CAPlaygroundItem>]
     }
 
     private struct CAPlaygroundItem: Decodable {
         let name: String
-        let id: Int
+        /// id 可能是 Int，也可能是 "0000001" 这种字符串（库里有 12 条是字符串）。
+        let id: String
         let creator: String
         let description: String?
         let file: String
         let preview: String
         let date: Int64
+
+        enum CodingKeys: String, CodingKey {
+            case name, id, creator, description, file, preview, date
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = try c.decode(String.self, forKey: .name)
+            if let intID = try? c.decode(Int.self, forKey: .id) {
+                id = String(intID)
+            } else {
+                id = try c.decode(String.self, forKey: .id)
+            }
+            creator = try c.decode(String.self, forKey: .creator)
+            description = try c.decodeIfPresent(String.self, forKey: .description)
+            file = try c.decode(String.self, forKey: .file)
+            preview = try c.decode(String.self, forKey: .preview)
+            if let d = try? c.decode(Int64.self, forKey: .date) {
+                date = d
+            } else if let s = try? c.decode(String.self, forKey: .date), let d = Int64(s) {
+                date = d
+            } else {
+                date = 0
+            }
+        }
     }
 
     private struct NuggetItem: Decodable {
