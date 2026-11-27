@@ -7,12 +7,14 @@ struct WallpaperItem: Identifiable, Codable, Equatable {
         case morph
         case depth
         case video
+        case gradient
 
         var displayName: String {
             switch self {
             case .morph: return "变身壁纸"
             case .depth: return "景深壁纸"
             case .video: return "视频壁纸"
+            case .gradient: return "渐变壁纸"
             }
         }
     }
