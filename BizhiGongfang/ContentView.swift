@@ -15,6 +15,10 @@ struct ContentView: View {
                 .tabItem {
                     Label("已装锁屏", systemImage: "rectangle.on.rectangle")
                 }
+            LibraryView()
+                .tabItem {
+                    Label("壁纸库", systemImage: "globe")
+                }
         }
     }
 }
