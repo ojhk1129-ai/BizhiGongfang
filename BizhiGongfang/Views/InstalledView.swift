@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// 已装锁屏：锁屏里已装的壁纸管理（缩略图 + 名字 + 徽章 + 编号/帧数/UUID，
-/// 搜索 + 刷新），只给本 App 写入的显示删除按钮。
+/// 搜索 + 刷新）。每行都有删除按钮；不是本 App 写入的点删除时会多一道
+/// 提醒（可能是系统或 Pocket Poster 的，删了可能找不回来）。
 struct InstalledView: View {
     @EnvironmentObject private var store: WallpaperStore
 
@@ -89,7 +90,7 @@ struct InstalledView: View {
                                 }
                             }
                         } header: {
-                            Text("共 \(installedSummaries.count) 张 · 只有本 App 写入的才有删除按钮")
+                            Text("共 \(installedSummaries.count) 张 · 每张都能删，不是本 App 的会多问一句")
                         }
                     }
                     .listStyle(.plain)
@@ -102,7 +103,11 @@ struct InstalledView: View {
             }
             Button("取消", role: .cancel) {}
         } message: { summary in
-            Text("\(displayName(for: summary))\nUUID：\(String(summary.uuid.prefix(8)))…\n删后要去多任务界面把 PosterBoard 划掉，画廊里才看不到。")
+            if isOurs(summary) {
+                Text("\(displayName(for: summary))\nUUID：\(String(summary.uuid.prefix(8)))…\n删后要去多任务界面把 PosterBoard 划掉，画廊里才看不到。")
+            } else {
+                Text("\(displayName(for: summary))\nUUID：\(String(summary.uuid.prefix(8)))…\n注意：这张不是本 App 写入的，可能是系统或 Pocket Poster 的壁纸，删了可能找不回来。确定要删吗？\n删后要去多任务界面把 PosterBoard 划掉，画廊里才看不到。")
+            }
         }
     }
 
@@ -128,12 +133,18 @@ struct InstalledView: View {
         return "其他（\(String(summary.uuid.prefix(8)))）"
     }
 
-    /// 是不是本 App 写入的（能删的）：编号在我们的 10100...19999
-    /// 区间里，或 uuid 在本地记录的 injectedPosterUUID 里。
-    /// Pocket Poster 的描述符既不在这个区间里，也不在我们的记录里，
-    /// 所以不会出现删除按钮——不要放宽这个判断。
+    /// 是不是本 App 写入的：编号在视频壁纸的 10100...19999 或云端导入的
+    /// 20000...99999 区间里（构建 #34 补上导入号段——之前只认 10100...19999，
+    /// 云端装的 57904 这类就被当成系统/其他，没了删除按钮），或描述符里
+    /// 有本 App 的写入标记，或 uuid 在本地记录的 injectedPosterUUID 里。
+    /// 重装 App 会清掉本地记录，所以编号区间和写入标记才是重装后还能认
+    /// 出来的依据。不是本 App 的也能删（多一道提醒），见删除确认。
     private func isOurs(_ summary: PosterBoardStore.DescriptorSummary) -> Bool {
-        if let identifier = summary.identifier, (10100...19999).contains(identifier) {
+        if let identifier = summary.identifier,
+           (10100...19999).contains(identifier) || (20000...99999).contains(identifier) {
+            return true
+        }
+        if summary.hasOurMarker {
             return true
         }
         return store.items.contains { $0.injectedPosterUUID == summary.uuid }
@@ -204,7 +215,7 @@ struct InstalledView: View {
 }
 
 /// 已装锁屏的一行：缩略图 + 名字 + 徽章 + 编号/帧数/UUID。
-/// 只有本 App 写入的（ours）才显示红色垃圾桶删除按钮。
+/// 每行都有红色垃圾桶删除按钮；不是本 App 写入的点删除时会多一道提醒。
 private struct InstalledRow: View {
     let summary: PosterBoardStore.DescriptorSummary
     let name: String
@@ -254,15 +265,13 @@ private struct InstalledRow: View {
 
             Spacer()
 
-            if ours {
-                Button(role: .destructive) {
-                    onDelete()
-                } label: {
-                    Image(systemName: "trash")
-                        .foregroundColor(.red)
-                }
-                .buttonStyle(.borderless)
+            Button(role: .destructive) {
+                onDelete()
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundColor(.red)
             }
+            .buttonStyle(.borderless)
         }
         .padding(.vertical, 4)
     }
