@@ -136,6 +136,38 @@ enum InjectFlow {
         return posterUUID
     }
 
+    /// 重新写入锁屏（“我的壁纸”详情页用）：用已存的视频再写一次描述符，
+    /// 记到同一条记录上，不新建记录。存的视频已是裁好的 12 秒 MOV，
+    /// 直接用，不用再过 VideoCropper。返回写进去的 poster UUID。
+    /// parallax：陀螺仪 3D 视差（构建 #30，默认开），见 DescriptorBuilder.caml()。
+    static func reinjectVideo(
+        item: WallpaperItem,
+        store: WallpaperStore,
+        parallax: Bool = true
+    ) async throws -> String {
+        guard PosterBoardStore.isAvailable else {
+            throw InjectError.missingAppGroup
+        }
+        let workspace = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BizhiGongfang-Inject-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let descriptor = try await DescriptorBuilder.buildDescriptor(from: store.videoURL(for: item), in: workspace, parallax: parallax)
+        let appHash = try PosterBoardStore.findPosterBoardHash()
+        let written = try PosterBoardStore.writeDescriptors(
+            appHash: appHash,
+            provider: DescriptorBuilder.providerID,
+            descriptorFolders: [descriptor]
+        )
+        guard let writtenPath = written.first else {
+            throw InjectError.wallpaperNotFound
+        }
+        let posterUUID = URL(fileURLWithPath: writtenPath).lastPathComponent
+        store.markInjected(id: item.id, posterUUID: posterUUID, provider: DescriptorBuilder.providerID)
+        return posterUUID
+    }
+
     /// 对照测试写入：把一份完整的真实 Cipher.tendies 描述符原样写进 PosterBoard，
     /// 只改文件夹 UUID 和三处 identifier（见 ControlDescriptor）。
     /// 走和正常注入完全相同的 writeDescriptors 路径（同样享受 postWriteRefresh
