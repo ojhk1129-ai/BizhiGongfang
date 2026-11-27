@@ -24,6 +24,7 @@ enum TendiesImporter {
         case readFailed(Error?)
         case missingAppGroup
         case writeFailed(Error?)
+        case noIPhoneVariant
 
         var errorDescription: String? {
             switch self {
@@ -35,7 +36,36 @@ enum TendiesImporter {
             case .readFailed(let error): return "读文件失败：\(error?.localizedDescription ?? "未知错误")"
             case .missingAppGroup: return "直写不可用：找不到 PosterBoard 容器（App Group 不可用）"
             case .writeFailed(let error): return "写入锁屏失败：\(error?.localizedDescription ?? "未知错误")"
+            case .noIPhoneVariant: return "这张壁纸只有 iPad 版，没有 iPhone 版，装不到 iPhone 上"
             }
+        }
+    }
+
+    /// 安装步骤标记（构建 #34）：每一步开始前先写进 UserDefaults，成功清掉。
+    /// 万一安装中途闪退（Swift 的 do/catch 抓不到的死法），下次打开壁纸库
+    /// 就能看到上次死在哪一步，不用再猜。正常的失败会走 catch 弹提示，
+    /// 调用方负责清掉标记，只留真正的闪退。
+    enum InstallStepMarker {
+        private static let stepKey = "BizhiGongfang.lastInstallStep"
+        private static let nameKey = "BizhiGongfang.lastInstallName"
+
+        static func set(step: String, name: String) {
+            let defaults = UserDefaults.standard
+            defaults.set(step, forKey: stepKey)
+            defaults.set(name, forKey: nameKey)
+        }
+
+        static func clear() {
+            let defaults = UserDefaults.standard
+            defaults.removeObject(forKey: stepKey)
+            defaults.removeObject(forKey: nameKey)
+        }
+
+        /// 上次中断的步骤（闪退留下的），没有返回 nil。
+        static func read() -> (step: String, name: String)? {
+            guard let step = UserDefaults.standard.string(forKey: stepKey),
+                  let name = UserDefaults.standard.string(forKey: nameKey) else { return nil }
+            return (step, name)
         }
     }
 
@@ -59,6 +89,7 @@ enum TendiesImporter {
         guard PosterBoardStore.isAvailable else {
             throw ImportError.missingAppGroup
         }
+        InstallStepMarker.set(step: "解压 .tendies", name: name)
         let data: Data
         do {
             data = try Data(contentsOf: packageURL)
@@ -78,12 +109,21 @@ enum TendiesImporter {
         guard !descriptorGroups.isEmpty else {
             throw ImportError.noDescriptors
         }
-        for descriptors in descriptorGroups.values.flatMap({ $0 })
+        // 只有 iPad 版的包直接拦下（构建 #34）：装上去在 iPhone 上也显示不了，
+        // 比如 Nugget 的 FrutigerAeroV1，里面只有一个 810w-1080h@2x~ipad 的壁纸。
+        // 没有 .wallpaper 文件夹的描述符（比如视频描述符）不拦。
+        let allDescriptors = descriptorGroups.values.flatMap { $0 }
+        guard allDescriptors.contains(where: { iphoneCapable(in: $0) }) else {
+            throw ImportError.noIPhoneVariant
+        }
+        InstallStepMarker.set(step: "换编号", name: name)
+        for descriptors in allDescriptors
             where shouldRandomizeIdentifier(in: descriptors) {
             try randomizeIdentifier(in: descriptors)
         }
 
         let appHash = try PosterBoardStore.findPosterBoardHash()
+        InstallStepMarker.set(step: "写入锁屏", name: name)
         var writtenPaths: [String] = []
         var firstProvider: String?
         for (extensionID, descriptors) in descriptorGroups {
@@ -107,6 +147,7 @@ enum TendiesImporter {
         let posterUUID = URL(fileURLWithPath: firstPath).lastPathComponent
 
         // 静态图：第一个描述符的第一帧（完整 JPEG，供记录用）。
+        InstallStepMarker.set(step: "记记录", name: name)
         var stillJPEGData: Data?
         if let firstGroup = descriptorGroups.values.first?.first,
            let wallpaperDir = findWallpaperDir(in: firstGroup) {
@@ -134,6 +175,7 @@ enum TendiesImporter {
             store.markInjected(id: item.id, posterUUID: posterUUID, provider: provider)
         }
 
+        InstallStepMarker.clear()
         return InstalledTendies(
             posterUUID: posterUUID,
             provider: provider,
@@ -254,6 +296,51 @@ enum TendiesImporter {
     }
 
     // MARK: - 从描述符取静态图
+
+    // MARK: - iPhone 版检查（构建 #34）
+
+    /// 这个描述符里有没有 iPhone 版壁纸：任意一个 .wallpaper 文件夹的
+    /// 名字含 ~iphone，或它的 Wallpaper.plist 里 logicalScreenClass 含 iphone。
+    /// 没有 .wallpaper 文件夹的描述符（比如视频描述符）不拦，返回 true。
+    private static func iphoneCapable(in descriptor: URL) -> Bool {
+        let dirs = allWallpaperDirs(in: descriptor)
+        if dirs.isEmpty { return true }
+        return dirs.contains { isIPhoneWallpaper($0) }
+    }
+
+    /// 描述符里全部 .wallpaper 文件夹（versions/*/contents/ 下）。
+    private static func allWallpaperDirs(in descriptor: URL) -> [URL] {
+        let fileManager = FileManager.default
+        let versionsDir = descriptor.appendingPathComponent("versions", isDirectory: true)
+        guard let versionDirs = try? fileManager.contentsOfDirectory(
+            at: versionsDir, includingPropertiesForKeys: [.isDirectoryKey], options: []
+        ) else { return [] }
+        var result: [URL] = []
+        for versionDir in versionDirs {
+            guard (try? versionDir.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+            let contentsDir = versionDir.appendingPathComponent("contents", isDirectory: true)
+            guard let children = try? fileManager.contentsOfDirectory(
+                at: contentsDir, includingPropertiesForKeys: [.isDirectoryKey], options: []
+            ) else { continue }
+            for child in children where child.lastPathComponent.hasSuffix(".wallpaper") {
+                guard (try? child.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+                result.append(child)
+            }
+        }
+        return result
+    }
+
+    /// 一个 .wallpaper 文件夹是不是 iPhone 版：文件夹名含 ~iphone，
+    /// 或 Wallpaper.plist 的 logicalScreenClass 含 iphone。
+    private static func isIPhoneWallpaper(_ dir: URL) -> Bool {
+        if dir.lastPathComponent.localizedCaseInsensitiveContains("~iphone") {
+            return true
+        }
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("Wallpaper.plist")),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let screenClass = plist["logicalScreenClass"] as? String else { return false }
+        return screenClass.localizedCaseInsensitiveContains("iphone")
+    }
 
     /// 描述符里找 <*.wallpaper> 文件夹。
     /// 社区包有的用 versions/1/，有的用 versions/0/（比如 Nugget 的
